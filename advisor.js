@@ -2,8 +2,8 @@
 // It runs entirely on the device. It gives general financial-health guidance, never
 // buy/sell recommendations for specific products.
 
-import { ym, addMonths, daysInMonth, sum, fmt0, fmtPct, MONTHS } from "./util.js?v=5";
-import { isStat, monthTotals, categorySums, accountBalances, savingsSummary, ASSET_KINDS } from "./model.js?v=5";
+import { ym, addMonths, daysInMonth, sum, fmt0, fmtPct, MONTHS } from "./util.js?v=6";
+import { isStat, monthTotals, categorySums, accountBalances, savingsSummary, debtsSummary, debtState, fixedSummary, ASSET_KINDS } from "./model.js?v=6";
 
 const LEVEL = { critical: 0, warn: 1, info: 2, good: 3 };
 
@@ -31,7 +31,8 @@ export function analyze(d, today) {
   const available = sum(Object.values(bal));
   const sav = savingsSummary(d);
   const liquid = available + sav.liquidSavings;
-  const worth = available + sav.total;
+  const debts = debtsSummary(d);
+  const worth = available + sav.total + debts.owed - debts.owe;
   const invested = sav.total - sav.liquidSavings;
 
   const insights = [];
@@ -121,13 +122,49 @@ export function analyze(d, today) {
     const k = t.concept.trim().toLowerCase(); (seen[k] ||= { name: t.concept.trim(), months: new Set(), total: 0 });
     seen[k].months.add(ym(t.date)); seen[k].total += t.amount;
   }
-  const recurring = Object.values(seen).filter(x => x.months.size >= 3).map(x => ({ name: x.name, monthly: Math.round(x.total / x.months.size) })).sort((a, b) => b.monthly - a.monthly);
+  const fixedNames = new Set((d.fixed || []).map(f => f.name.trim().toLowerCase()));
+  for (const t of d.tx) if (t.fixed) fixedNames.add(t.concept.trim().toLowerCase());
+  const recurring = Object.entries(seen).filter(([k, x]) => x.months.size >= 3 && !fixedNames.has(k)).map(([, x]) => ({ name: x.name, monthly: Math.round(x.total / x.months.size) })).sort((a, b) => b.monthly - a.monthly);
   if (recurring.length) {
     const tot = sum(recurring.map(r => r.monthly));
-    add("info", "Tus pagos fijos",
-      `Hay ${recurring.length === 1 ? "un gasto que se repite" : `${recurring.length} gastos que se repiten`} casi todos los meses, unos ${fmt0(tot)} al mes en total: ${recurring.slice(0, 4).map(r => `${r.name} (${fmt0(r.monthly)})`).join(", ")}${recurring.length > 4 ? "…" : ""}.`,
-      "Revisa cada pocos meses si sigues usando todas tus suscripciones.");
+    add("info", "Gastos que se repiten cada mes",
+      `Hay ${recurring.length === 1 ? "un gasto que se repite" : `${recurring.length} gastos que se repiten`} casi todos los meses y no están en tus gastos fijos, unos ${fmt0(tot)} al mes: ${recurring.slice(0, 4).map(r => `${r.name} (${fmt0(r.monthly)})`).join(", ")}${recurring.length > 4 ? "…" : ""}.`,
+      "Añádelos en Movimientos → Fijos para verlos venir y que se apunten solos.");
   }
+
+  // 6b. Weight of fixed costs (fixed expenses plus debt instalments) on income
+  const fx = fixedSummary(d, today);
+  // Instalments already set up as fixed expenses are counted once, inside fx.monthlyOut.
+  const linkedDebts = new Set((d.fixed || []).filter(f => f.debt && !f.paused).map(f => f.debt));
+  const unlinkedInstalments = sum(debts.items.filter(x => x.debt.dir === "owe" && !x.done && !linkedDebts.has(x.debt.id)).map(x => x.debt.monthly || 0));
+  const fixedLoad = fx.monthlyOut + unlinkedInstalments;
+  const incomeRef = Math.max(avgIn, fx.monthlyIn);
+  if (fixedLoad > 0 && incomeRef > 0) {
+    const share = fixedLoad / incomeRef;
+    if (share > 0.5) add("warn", "Tus gastos fijos se llevan más de la mitad",
+      `Entre gastos fijos${debts.monthly ? " y cuotas de deudas" : ""} pagas ${fmt0(fixedLoad)} al mes, el ${fmtPct(share)} de tus ingresos. Te deja poco margen para imprevistos.`,
+      "Revisa suscripciones que no uses y si puedes renegociar alguna tarifa (móvil, luz, seguros).");
+    else add("info", "Tus gastos fijos", `Pagas ${fmt0(fixedLoad)} al mes en gastos fijos${debts.monthly ? " y cuotas" : ""}, el ${fmtPct(share)} de tus ingresos.${fx.leftThisMonth > 0 ? ` Este mes aún te quedan ${fmt0(fx.leftThisMonth)} por pagar.` : ""}`, null);
+  }
+
+  // 6c. Debts
+  for (const x of debts.items) {
+    if (x.done) continue;
+    const dbt = x.debt;
+    if (dbt.dir === "owe" && dbt.due && dbt.due < today) add("critical", `Deuda vencida con ${dbt.who}`,
+      `Tenías que haber devuelto ${fmt0(x.remaining)} antes del ${new Date(dbt.due + "T00:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long" })}.`,
+      "Habla cuanto antes con quien te prestó el dinero y acordad un plan de pago realista.");
+    else if (dbt.dir === "owed" && dbt.due && dbt.due < today) add("info", `${dbt.who} ya debería haberte pagado`,
+      `Te debe ${fmt0(x.remaining)} y el plazo acabó el ${new Date(dbt.due + "T00:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long" })}.`,
+      "Un recordatorio amable a tiempo evita malentendidos.");
+    if (dbt.dir === "owe" && dbt.apr >= 10) add("warn", `Interés alto: ${dbt.who}`,
+      `Esta deuda tiene un ${String(dbt.apr).replace(".", ",")} % de interés anual: te cuesta unos ${fmt0(x.remaining * dbt.apr / 100 / 12)} al mes solo en intereses.`,
+      liquid > x.remaining * 1.5 ? "Tienes liquidez para adelantar su pago; suele ser la mejor «inversión» posible." : "Si tienes varias deudas, paga primero la de mayor interés.");
+  }
+  if (debts.owe > 0 && avgIn > 0 && debts.monthly / avgIn > 0.35) add("warn", "Tus cuotas de deuda pesan mucho",
+    `Pagas ${fmt0(debts.monthly)} al mes en cuotas, el ${fmtPct(debts.monthly / avgIn)} de tus ingresos. Por encima del 35 % se considera arriesgado.`,
+    "Evita pedir más préstamos hasta reducir esta proporción.");
+  if (debts.owed > 0) add("info", "Dinero que te deben", `Te deben ${fmt0(debts.owed)} en total. Cuenta en tu patrimonio, pero no es dinero disponible hasta que te lo devuelvan.`, null);
 
   // 7. Cash usage this month
   if (now.o > 0 && now.cashOut / now.o > 0.6 && now.cashOut > 5000) add("info", "Pagas mucho en efectivo",
@@ -195,12 +232,17 @@ export function analyze(d, today) {
     const cryptoShare = worth > 0 ? (sav.byKind.crypto || 0) / worth : 0;
     parts.push({ label: "Diversificación", pts: Math.round(25 * clamp01((Math.min(kinds, 3) / 3) * (cryptoShare > 0.3 ? 0.5 : 1))) });
   }
+  if (debts.owe > 0) {
+    const overdue = debts.items.some(x => !x.done && x.debt.dir === "owe" && x.debt.due && x.debt.due < today);
+    const ratio = debts.owe / Math.max(1, (avgIn || fx.monthlyIn) * 6);
+    parts.push({ label: "Deudas", pts: overdue ? 0 : Math.round(25 * clamp01(1 - ratio)) });
+  }
   const score = parts.length >= 2 ? Math.round(sum(parts.map(p => p.pts)) / (parts.length * 25) * 100) : null;
 
   insights.sort((a, b) => LEVEL[a.level] - LEVEL[b.level]);
   return {
     score, scoreParts: parts, enoughData, insights, projection,
-    metrics: { avgIn, avgOut, rate, monthsCovered, liquid, worth, available, invested, savings: sav.total, refMonths: ref.length, recurring },
+    metrics: { avgIn, avgOut, rate, monthsCovered, liquid, worth, available, invested, savings: sav.total, refMonths: ref.length, recurring, owe: debts.owe, owed: debts.owed, fixedLoad },
   };
 }
 

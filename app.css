@@ -453,3 +453,24 @@ button.linked{transition:background-color 120ms ease}
   .qrow{grid-template-columns:auto minmax(0,1fr) auto}
   .qrow .spark{display:none}
 }
+
+/* ---------- debts and fixed ---------- */
+.debts{display:grid}
+.debt{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;width:100%;padding:14px 4px;border:0;border-bottom:1px solid var(--rule);background:none;text-align:left;color:var(--ink);transition:background-color 120ms ease}
+@media (hover:hover) and (pointer:fine){.debt:hover,.fx:hover{background:var(--sunk)}}
+.debt-ic{width:38px;height:38px;border-radius:11px;display:grid;place-items:center}
+.debt-ic.owe{background:var(--out-soft);color:var(--out)}
+.debt-ic.owed{background:var(--in-soft);color:var(--in)}
+.debt-main{min-width:0;display:grid;gap:4px}
+.debt-main b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.debt-main small{color:var(--ink-3);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.debt-main .track{height:5px;margin-top:2px}
+.debt-main .track i{background:var(--in)}
+.debt-val{text-align:right;display:grid;justify-items:end;gap:2px;white-space:nowrap}
+.debt-val b{font-weight:500}
+.debt-val small{font-size:12.5px;color:var(--ink-3)}
+.due{font-size:12px;font-weight:500;color:var(--ink-3)}
+.due.soon{color:var(--warn)}
+.due.late{color:var(--crit)}
+.fx{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 4px;border:0;border-bottom:1px solid var(--rule);background:none;text-align:left;width:100%;color:var(--ink);transition:background-color 120ms ease}
+.seg small{font-size:11.5px;background:var(--out);color:#fff;border-radius:999px;padding:0 6px;margin-left:4px;vertical-align:1px}

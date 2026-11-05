@@ -1,6 +1,6 @@
 // Cuentas claras: offline support. Bump VERSION on every release so phones pick up the update.
-const VERSION = "cuentas-v5";
-const CORE = ["./", "index.html", "app.css?v=5", "app.js?v=5", "util.js?v=5", "vault.js?v=5", "model.js?v=5", "advisor.js?v=5", "quotes.js?v=5", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
+const VERSION = "cuentas-v6";
+const CORE = ["./", "index.html", "app.css?v=6", "app.js?v=6", "util.js?v=6", "vault.js?v=6", "model.js?v=6", "advisor.js?v=6", "quotes.js?v=6", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE.map(u => new Request(u, { cache: "reload" })))).then(() => self.skipWaiting()));

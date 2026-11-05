@@ -1,11 +1,11 @@
 // Cuentas claras — UI layer. Renders from the in-memory data of the open profile and
 // writes every change through the encrypted Session.
 
-import * as U from "./util.js?v=5";
-import * as V from "./vault.js?v=5";
-import * as M from "./model.js?v=5";
-import { analyze, scoreWord } from "./advisor.js?v=5";
-import * as Q from "./quotes.js?v=5";
+import * as U from "./util.js?v=6";
+import * as V from "./vault.js?v=6";
+import * as M from "./model.js?v=6";
+import { analyze, scoreWord } from "./advisor.js?v=6";
+import * as Q from "./quotes.js?v=6";
 
 const { esc, fmt, fmt0, fmtBal, fmtSigned, fmtNum, fmtPct, sum } = U;
 const $ = (s, el = document) => el.querySelector(s);
@@ -29,7 +29,7 @@ let D = null;
 let hiddenAt = 0;
 let freshId = null;
 const today = () => U.todayStr();
-const view = { tab: "inicio", month: U.ym(U.todayStr()), q: "", type: "all", acct: "", cat: "", movTab: "list" };
+const view = { tab: "inicio", month: U.ym(U.todayStr()), q: "", type: "all", acct: "", cat: "", movTab: "list", savTab: "assets" };
 
 /* ======================================================================
    Toasts
@@ -281,6 +281,7 @@ function startSession(s) {
   view.month = U.ym(today());
   renderShell();
   if (!D.settings.onboarded) openOnboarding();
+  fixedCheckedOn = ""; runFixed();
   startPriceLoop();
 }
 
@@ -372,7 +373,13 @@ document.addEventListener("click", e => {
     case "prevMonth": view.month = U.addMonths(view.month, -1); renderView(); break;
     case "nextMonth": if (view.month < U.ym(today())) { view.month = U.addMonths(view.month, 1); renderView(); } break;
     case "goMonth": view.month = id; renderView(); break;
-    case "movTab": view.movTab = a.dataset.v; renderView(); break;
+    case "movTab": view.movTab = a.dataset.v; if (a.dataset.go) setTab("movimientos"); else renderView(); break;
+    case "savTab": view.savTab = a.dataset.v; if (a.dataset.go) setTab("ahorros"); else renderView(); break;
+    case "newDebt": openDebtForm(null, a.dataset.dir || "owe"); break;
+    case "debt": openDebt(id); break;
+    case "newFixed": openFixedForm(null, { type: a.dataset.type || "out" }); break;
+    case "fixed": { const f = D.fixed.find(x => x.id === id); if (f) openFixedForm(f); break; }
+    case "fixedSuggest": openFixedForm(null, { name: a.dataset.name, amount: Number(a.dataset.amount) }); break;
     case "resetFilters": Object.assign(view, { q: "", type: "all", acct: "", cat: "" }); renderView(); break;
     case "budget": editBudget(a); break;
     case "newAsset": openAssetKind(); break;
@@ -426,7 +433,9 @@ function deltaText(cur, prev, goodUp) {
 function viewInicio() {
   const bal = M.accountBalances(D), avail = sum(Object.values(bal));
   const sav = M.savingsSummary(D);
-  const worth = avail + sav.total;
+  const debts = M.debtsSummary(D);
+  const worth = avail + sav.total + debts.owed - debts.owe;
+  const upcoming = D.fixed.filter(f => !f.paused && f.type !== "in").map(f => ({ f, next: M.nextCharge(f, today()) })).filter(x => x.next && x.next <= U.addDays(today(), 7)).sort((a, b) => a.next.localeCompare(b.next));
   const t = M.monthTotals(D, view.month);
   const p = M.monthTotals(D, U.addMonths(view.month, -1), isCurrentMonth() ? Number(today().slice(8)) : 0);
   const rate = t.i ? Math.round(t.n / t.i * 100) : null;
@@ -439,11 +448,13 @@ function viewInicio() {
   return `
   <section class="section">
     <div class="hero">
-      <div><div class="kicker-num">Patrimonio total</div><div class="big num">${fmtBal(worth)}</div>
-        <p class="muted" style="margin-top:10px">Dinero disponible ${fmtBal(avail)} · Ahorros ${fmtBal(sav.total)}</p></div>
+      <div><div class="kicker-num">${debts.owe || debts.owed ? "Patrimonio neto" : "Patrimonio total"}</div><div class="big num${worth < 0 ? " neg" : ""}">${fmtBal(worth)}</div>
+        <p class="muted" style="margin-top:10px">Dinero disponible ${fmtBal(avail)} · Ahorros ${fmtBal(sav.total)}${debts.owe ? ` · Deudas −${fmt0(debts.owe)}` : ""}${debts.owed ? ` · Te deben ${fmt0(debts.owed)}` : ""}</p></div>
       <div class="breakdown">
         ${D.accounts.map(a => `<button class="line" data-act="newTx" data-account="${esc(a.id)}"><span>${ic(ACCT_ICON[a.kind] || "card")}${esc(a.name)}</span><b class="num${bal[a.id] < 0 ? " neg" : ""}">${fmtBal(bal[a.id])}</b></button>`).join("")}
-        <button class="line" data-tab="ahorros"><span>${ic("vault")}Ahorros e inversiones</span><b class="num">${fmtBal(sav.total)}</b></button>
+        <button class="line" data-act="savTab" data-v="assets" data-go="1"><span>${ic("vault")}Ahorros e inversiones</span><b class="num">${fmtBal(sav.total)}</b></button>
+        ${debts.owe ? `<button class="line" data-act="savTab" data-v="debts" data-go="1"><span>${ic("file")}Lo que debes</span><b class="num neg">−${fmt0(debts.owe)}</b></button>` : ""}
+        ${debts.owed ? `<button class="line" data-act="savTab" data-v="debts" data-go="1"><span>${ic("user")}Lo que te deben</span><b class="num pos">+${fmt0(debts.owed)}</b></button>` : ""}
       </div>
     </div>
   </section>
@@ -462,6 +473,9 @@ function viewInicio() {
       <button class="btn" data-act="newTx" data-type="transfer">${ic("swap")}Mover dinero</button>
     </div>
   </section>
+
+  ${upcoming.length ? `<section class="section"><div class="sec-head"><h2>Próximos gastos fijos</h2><button class="btn btn-ghost" data-act="movTab" data-v="fixed" data-go="1">Ver todos${ic("arrow")}</button></div>
+    <div class="txl">${upcoming.slice(0, 4).map(({ f, next }) => `<button class="fx" data-act="fixed" data-id="${esc(f.id)}"><span class="tx-ic ic-out">${ic(f.debt ? "bank" : "swap")}</span><span class="tx-main"><b>${esc(f.name)}</b><small>${esc(acctName(f.account))}${f.auto ? " · se apunta solo" : ""}</small></span><span class="tx-amt num">${fmt(f.amount)}<small>${chargeLabel(next)}</small></span></button>`).join("")}</div></section>` : ""}
 
   <section class="section">
     <div class="sec-head"><h2>Resumen del mes</h2>${monthNav()}</div>
@@ -541,7 +555,7 @@ const acctName = id => D.accounts.find(a => a.id === id)?.name || "Cuenta elimin
 
 function txRow(t) {
   const cls = t.type === "transfer" ? "" : "ic-" + t.type;
-  const iconId = t.type === "transfer" ? "swap" : t.asset ? "vault" : t.type === "in" ? "down" : "up";
+  const iconId = t.type === "transfer" ? "swap" : t.asset ? "vault" : t.debt ? "file" : t.type === "in" ? "down" : "up";
   const sub = t.type === "transfer" ? `${esc(acctName(t.account))} → ${esc(acctName(t.to))}` : `${esc(t.cat)} · ${esc(acctName(t.account))}`;
   const amt = t.type === "transfer" ? fmt(t.amount) : (t.type === "in" ? "+" : "−") + fmt(t.amount);
   return `<button class="tx${t.id === freshId ? " fresh" : ""}" data-act="editTx" data-id="${esc(t.id)}">
@@ -560,9 +574,10 @@ function viewMovs() {
     <div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Movimientos</h2>${monthNav()}</div>
     <div class="seg" role="tablist" aria-label="Vista">
       <label><input type="radio" name="movTab" value="list" data-act="movTab" data-v="list"${view.movTab === "list" ? " checked" : ""}><span>Lista</span></label>
-      <label><input type="radio" name="movTab" value="cats" data-act="movTab" data-v="cats"${view.movTab === "cats" ? " checked" : ""}><span>Por categoría y presupuestos</span></label>
+      <label><input type="radio" name="movTab" value="cats" data-act="movTab" data-v="cats"${view.movTab === "cats" ? " checked" : ""}><span>Categorías</span></label>
+      <label><input type="radio" name="movTab" value="fixed" data-act="movTab" data-v="fixed"${view.movTab === "fixed" ? " checked" : ""}><span>Fijos</span></label>
     </div></section>`;
-  return head + (view.movTab === "cats" ? viewCats() : viewList());
+  return head + (view.movTab === "cats" ? viewCats() : view.movTab === "fixed" ? viewFixed() : viewList());
 }
 
 function listBody() {
@@ -657,6 +672,13 @@ function openTx(t, preset = {}, instant = false) {
       foot: a ? `<button class="btn btn-primary" data-sheet-close id="goAsset">Ir a ${esc(a.name)}</button>` : "", mount: s => { $("#goAsset", s)?.addEventListener("click", () => setTimeout(() => { setTab("ahorros"); openAsset(a.id); }, 0)); } });
     return;
   }
+  if (t && t.debt) {
+    const x = D.debts.find(y => y.id === t.debt);
+    openSheet({ title: "Movimiento de deuda", body: `<div class="form"><p class="muted">Este movimiento se creó al registrar una operación de la deuda con <b>${esc(x?.who || "alguien")}</b>. Para cambiarlo o borrarlo, hazlo desde esa deuda.</p>
+      <div class="facts"><div><small>Importe</small><b class="num">${fmt(t.amount)}</b></div><div><small>Cuenta</small><b>${esc(acctName(t.account))}</b></div><div><small>Fecha</small><b>${U.dayLabel(t.date)}</b></div></div></div>`,
+      foot: x ? `<button class="btn btn-primary" data-sheet-close id="goDebt">Ir a la deuda</button>` : "", mount: s => { $("#goDebt", s)?.addEventListener("click", () => setTimeout(() => { view.savTab = "debts"; setTab("ahorros"); openDebt(x.id); }, 0)); } });
+    return;
+  }
   const f = t ? { ...t } : { type: preset.type || "out", amount: 0, account: preset.account || (D.accounts.find(a => a.kind === "card") || D.accounts[0]).id, to: "", cat: "", concept: "", date: isCurrentMonth() ? today() : `${view.month}-01`, note: "" };
   if (f.type === "transfer" && !f.to) f.to = (D.accounts.find(a => a.id !== f.account) || {}).id || "";
   const edit = !!t;
@@ -734,7 +756,7 @@ function assetSubtitle(a, s) {
   if (a.kind === "bank") return `${esc(a.entity || "Cuenta")}${a.apr ? ` · ${String(a.apr).replace(".", ",")} % TAE` : ""}`;
   return k.label;
 }
-function viewAhorros() {
+function viewAssets() {
   const sav = M.savingsSummary(D);
   const kinds = M.KIND_ORDER.filter(k => sav.byKind[k] > 0);
   if (!D.assets.length) return `<section class="section"><div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Ahorros</h2></div>
@@ -1356,7 +1378,7 @@ const viewHasFocus = () => { const a = document.activeElement; return a && $("#v
 let priceTimer = null;
 function startPriceLoop() {
   clearInterval(priceTimer);
-  priceTimer = setInterval(() => { if (session && !document.hidden) refreshPrices(); if (view.tab === "mercado") updateMarketClock(); }, 15000);
+  priceTimer = setInterval(() => { if (session && !document.hidden) { runFixed(); refreshPrices(); } if (view.tab === "mercado") updateMarketClock(); }, 15000);
   refreshPrices();
 }
 addEventListener("online", () => session && refreshPrices({ force: true }));
@@ -1591,6 +1613,297 @@ function lineChart(box, pts, range) {
   };
   svg.addEventListener("pointermove", at); svg.addEventListener("pointerdown", at);
   svg.addEventListener("pointerleave", () => { g.style.display = "none"; tip.classList.remove("on"); });
+}
+
+/* ======================================================================
+   Debts
+   ====================================================================== */
+const DEBT_ICON = { person: "user", bank: "bank", card: "card", other: "file" };
+const dueLabel = (due, done) => {
+  if (!due || done) return "";
+  const days = Math.round((Date.parse(due + "T00:00:00") - Date.parse(today() + "T00:00:00")) / 864e5);
+  if (days < 0) return `<span class="due late">Vencida hace ${-days === 1 ? "1 día" : `${-days} días`}</span>`;
+  if (days === 0) return `<span class="due soon">Vence hoy</span>`;
+  if (days <= 14) return `<span class="due soon">Vence en ${days === 1 ? "1 día" : `${days} días`}</span>`;
+  return `<span class="due">Hasta el ${new Date(due + "T00:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short", year: due.slice(0, 4) !== today().slice(0, 4) ? "numeric" : undefined })}</span>`;
+};
+
+function savTabs() {
+  return `<div class="seg" role="tablist" aria-label="Vista" style="margin-top:24px">
+    <label><input type="radio" name="savTab" value="assets" data-act="savTab" data-v="assets"${view.savTab !== "debts" ? " checked" : ""}><span>Ahorros</span></label>
+    <label><input type="radio" name="savTab" value="debts" data-act="savTab" data-v="debts"${view.savTab === "debts" ? " checked" : ""}><span>Deudas${D.debts.some(x => !M.debtState(x).done) ? ` <small class="num">${D.debts.filter(x => !M.debtState(x).done).length}</small>` : ""}</span></label>
+  </div>`;
+}
+
+function viewAhorros() { return savTabs() + (view.savTab === "debts" ? viewDebts() : viewAssets()); }
+
+function debtRow(x) {
+  const d = x.debt, owe = d.dir === "owe";
+  return `<button class="debt" data-act="debt" data-id="${esc(d.id)}">
+    <span class="debt-ic ${owe ? "owe" : "owed"}">${ic(DEBT_ICON[d.kind] || "user")}</span>
+    <span class="debt-main"><b>${esc(d.who)}</b><small>${esc(d.concept || M.DEBT_KINDS[d.kind] || "")}${d.monthly && owe && !x.done ? ` · cuota ${fmt0(d.monthly)}/mes` : ""}</small>
+      ${x.total ? `<span class="track" aria-hidden="true"><i style="width:${x.progress * 100}%"></i></span>` : ""}</span>
+    <span class="debt-val num"><b class="${x.done ? "faint" : owe ? "neg" : "pos"}">${x.done ? "Saldada" : fmt(x.remaining)}</b><small>${x.done ? fmt0(x.total) : `de ${fmt0(x.total)}`}</small>${dueLabel(d.due, x.done)}</span>
+  </button>`;
+}
+
+function viewDebts() {
+  const s = M.debtsSummary(D);
+  if (!D.debts.length) return `<section class="section"><div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Deudas</h2></div>
+    <div class="empty"><b>Apunta lo que debes y lo que te deben</b><span>Un préstamo del banco, la tarjeta de crédito, 20 € que te dejó un amigo o lo que tú prestaste. Verás cuánto queda y lo tendrás en cuenta en tu patrimonio.</span>
+    <div class="btns"><button class="btn btn-primary" data-act="newDebt" data-dir="owe">${ic("plus")}Lo que debo</button><button class="btn" data-act="newDebt" data-dir="owed">${ic("plus")}Lo que me deben</button></div></div></section>`;
+  const owe = s.items.filter(x => x.debt.dir === "owe"), owed = s.items.filter(x => x.debt.dir === "owed");
+  const order = (a, b) => (a.done - b.done) || String(a.debt.due || "9999").localeCompare(String(b.debt.due || "9999")) || b.remaining - a.remaining;
+  return `<section class="section">
+    <div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Deudas</h2><button class="btn btn-primary" data-act="newDebt">${ic("plus")}Añadir deuda</button></div>
+    <div class="stats3">
+      <div class="stat"><h3><i class="dot" style="background:var(--out)"></i>Debes</h3><div class="mid num">${fmt0(s.owe)}</div>${s.monthly ? `<div class="delta"><span>Cuotas: ${fmt0(s.monthly)} al mes</span></div>` : ""}</div>
+      <div class="stat"><h3><i class="dot" style="background:var(--in)"></i>Te deben</h3><div class="mid num">${fmt0(s.owed)}</div></div>
+      <div class="stat"><h3>Balance</h3><div class="mid num ${s.owed - s.owe < 0 ? "neg" : ""}">${fmtBal(s.owed - s.owe)}</div><div class="delta"><span>${s.owed - s.owe < 0 ? "Debes más de lo que te deben" : "Te deben más de lo que debes"}</span></div></div>
+    </div>
+  </section>
+  <section class="section"><div class="sec-head"><h2>Lo que debes</h2><button class="btn btn-ghost" data-act="newDebt" data-dir="owe">${ic("plus")}Añadir</button></div>
+    ${owe.length ? `<div class="debts">${owe.sort(order).map(debtRow).join("")}</div>` : `<p class="muted">No debes nada. Bien hecho.</p>`}</section>
+  <section class="section"><div class="sec-head"><h2>Lo que te deben</h2><button class="btn btn-ghost" data-act="newDebt" data-dir="owed">${ic("plus")}Añadir</button></div>
+    ${owed.length ? `<div class="debts">${owed.sort(order).map(debtRow).join("")}</div>` : `<p class="muted">Nadie te debe dinero ahora mismo.</p>`}</section>`;
+}
+
+function openDebtForm(existing, dir = "owe") {
+  const x = existing, edit = !!x;
+  const f = x ? { ...x } : { dir, kind: "person" };
+  const render = () => `<form class="form" id="debtForm" novalidate>
+    ${edit ? "" : `<div class="seg full type" role="radiogroup" aria-label="Tipo"><label><input type="radio" name="dir" value="owe"${f.dir === "owe" ? " checked" : ""}><span>Yo debo</span></label><label><input type="radio" name="dir" value="owed"${f.dir === "owed" ? " checked" : ""}><span>Me deben</span></label></div>`}
+    <fieldset class="field"><legend>${f.dir === "owe" ? "¿A quién?" : "¿Quién?"}</legend><div class="chips">${Object.entries(M.DEBT_KINDS).map(([k, l]) => `<label><input type="radio" name="kind" value="${k}"${f.kind === k ? " checked" : ""}><span>${ic(DEBT_ICON[k])}${l}</span></label>`).join("")}</div></fieldset>
+    ${textField("who", f.dir === "owe" ? "Nombre de la persona o entidad" : "Nombre de quien te debe", f.who || "", { placeholder: f.kind === "bank" ? "Ej. Préstamo coche BBVA" : f.kind === "card" ? "Ej. Visa" : "Ej. Marta", max: 40, auto: !edit })}
+    ${textField("concept", "Motivo", f.concept || "", { placeholder: "Ej. Entradas del concierto", optional: true, max: 60 })}
+    ${edit ? "" : moneyField("amount", f.dir === "owe" ? "Cuánto debes" : "Cuánto te deben", "", { big: true })}
+    <div class="row2">
+      <label class="field"><span class="lbl">Fecha límite <span class="opt">(opcional)</span></span><input class="in" type="date" name="due" value="${esc(f.due || "")}"><small class="err" data-err="due"></small></label>
+      ${textField("apr", "Interés anual %", f.apr ? String(f.apr).replace(".", ",") : "", { placeholder: "Ej. 7,5", optional: true, max: 6 })}
+    </div>
+    ${f.dir === "owe" ? moneyField("monthly", "Cuota mensual", f.monthly ? centsToInput(f.monthly) : "", { optional: true, hint: "Si pagas a plazos. Después podrás convertirla en gasto fijo para que se apunte sola." }) : ""}
+    ${edit ? "" : `<fieldset class="field"><legend>${f.dir === "owe" ? "¿Recibiste ese dinero en una de tus cuentas?" : "¿Salió ese dinero de una de tus cuentas?"}</legend>${accountChips("account", "", { none: true, noneLabel: "No" })}
+      <small class="hint">Si eliges una cuenta, su saldo cambia, pero no cuenta como ingreso ni como gasto.</small></fieldset>${dateField(today())}`}
+    <button type="submit" hidden></button></form>`;
+  openSheet({
+    title: edit ? `Editar deuda` : "Nueva deuda", body: render(),
+    foot: `<button class="btn btn-primary" id="debtSave">${edit ? "Guardar cambios" : "Guardar"}</button>`,
+    mount: el => {
+      const wire = () => {
+        const form = $("#debtForm", el);
+        if (!edit) wireDate(form);
+        form.addEventListener("change", e => {
+          if (e.target.name === "dir" || e.target.name === "kind") {
+            const keep = { who: form.elements.who.value, concept: form.elements.concept.value };
+            f[e.target.name] = e.target.value; Object.assign(f, keep);
+            $("#sheetBody").innerHTML = render(); wire();
+          }
+        });
+        form.addEventListener("submit", e => { e.preventDefault(); save(); });
+      };
+      const save = () => {
+        const form = $("#debtForm", el), v = n => form.elements[n]?.value?.trim() ?? "";
+        const aprRaw = v("apr"), monRaw = v("monthly");
+        const data = { dir: f.dir, kind: radio(form, "kind") || f.kind, who: v("who"), concept: v("concept"), due: v("due") || "",
+          apr: aprRaw ? Number(aprRaw.replace(",", ".")) : null, monthly: monRaw ? U.parseMoney(monRaw) : null,
+          amount: edit ? 1 : U.parseMoney(v("amount")), date: edit ? today() : v("date") };
+        if (!setErrors(form, M.validateDebt(data))) return;
+        const clean = { dir: data.dir, kind: data.kind, who: data.who, concept: data.concept, due: data.due || undefined, apr: data.apr || undefined, monthly: data.monthly || undefined };
+        closeSheet();
+        if (edit) { commit(d => { const y = d.debts.find(z => z.id === x.id); for (const k of ["concept", "due", "apr", "monthly"]) delete y[k]; Object.assign(y, Object.fromEntries(Object.entries(clean).filter(([, val]) => val !== undefined && val !== ""))); }, "Deuda actualizada"); openDebt(x.id); return; }
+        const id = U.uid(), account = radio(form, "account");
+        view.savTab = "debts";
+        commit(d => {
+          d.debts.push({ id, ...Object.fromEntries(Object.entries(clean).filter(([, val]) => val !== undefined && val !== "")), ops: [], createdAt: new Date().toISOString() });
+          M.addDebtOp(d, id, { type: "start", date: data.date, amount: data.amount }, account);
+        }, data.dir === "owe" ? `Deuda con ${data.who} apuntada` : `${data.who} te debe ${fmt0(data.amount)}`);
+      };
+      wire();
+      $("#debtSave", el).addEventListener("click", save);
+    },
+  });
+}
+
+const DEBT_OP = { start: "Deuda inicial", add: "Aumento", pay: "Pago" };
+function openDebt(id) {
+  const x = D.debts.find(y => y.id === id); if (!x) { closeSheet(); return; }
+  const s = M.debtState(x), owe = x.dir === "owe";
+  const ops = [...x.ops].sort((a, b) => b.date.localeCompare(a.date) || (b.seq || 0) - (a.seq || 0));
+  const linkedFixed = D.fixed.find(f => f.debt === x.id);
+  const facts = [
+    [owe ? "Te queda por pagar" : "Te queda por cobrar", `<span class="${s.done ? "" : owe ? "neg" : "pos"}">${fmt(s.remaining)}</span>`],
+    ["Total", fmt(s.total)], [owe ? "Ya pagado" : "Ya cobrado", fmt(s.paid)],
+    ...(x.due ? [["Fecha límite", new Date(x.due + "T00:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "long", year: "numeric" })]] : []),
+    ...(x.apr ? [["Interés anual", `${String(x.apr).replace(".", ",")} %`], ["Intereses al mes", `≈ ${fmt0(s.remaining * x.apr / 100 / 12)}`]] : []),
+    ...(x.monthly ? [["Cuota mensual", fmt(x.monthly)], ["Cuotas restantes", `≈ ${Math.ceil(s.remaining / x.monthly)}`]] : []),
+  ];
+  openSheet({
+    title: x.who,
+    body: `<div class="form">
+      <p class="muted" style="margin-top:-6px">${owe ? "Le debes" : "Te debe"} · ${esc(M.DEBT_KINDS[x.kind] || "")}${x.concept ? ` · ${esc(x.concept)}` : ""}</p>
+      <div><div class="track" style="height:10px" aria-hidden="true"><i style="width:${s.progress * 100}%;background:var(--${owe ? "in" : "in"})"></i></div>
+        <p class="hint" style="margin-top:6px">${s.done ? (owe ? "Deuda saldada." : "Ya te lo han devuelto todo.") : `${fmtPct(s.progress)} ${owe ? "pagado" : "cobrado"}`} ${dueLabel(x.due, s.done)}</p></div>
+      <div class="facts">${facts.map(([l, v]) => `<div><small>${l}</small><b class="num">${v}</b></div>`).join("")}</div>
+      <div class="actions-row">
+        <button class="btn btn-primary" data-dop="pay"${s.done ? " disabled" : ""}>${ic("check")}${owe ? "Registrar pago" : "Registrar cobro"}</button>
+        <button class="btn" data-dop="add">${ic("plus")}${owe ? "Me prestan más" : "Le presto más"}</button>
+      </div>
+      ${owe && x.monthly && !s.done ? (linkedFixed ? `<p class="hint">La cuota se apunta sola cada mes como gasto fijo («${esc(linkedFixed.name)}»).</p>` : `<button class="btn" id="mkFixed">${ic("swap")}Apuntar la cuota cada mes automáticamente</button>`) : ""}
+      <div><div class="sec-head" style="margin:8px 0 0"><h2 style="font-size:15px">Historial</h2></div>
+      <ul class="ops">${ops.map(o => `<li><span>${DEBT_OP[o.type]}${o.type === "pay" && !owe ? " recibido" : ""}<small>${U.dayLabel(o.date)}${o.date.slice(0, 4) !== today().slice(0, 4) ? " " + o.date.slice(0, 4) : ""}${o.tx ? ` · ${esc(acctName(D.tx.find(t => t.id === o.tx)?.account))}` : ""}${o.note ? ` · ${esc(o.note)}` : ""}</small></span><span class="num">${o.type === "pay" ? "−" : "+"}${fmt(o.amount)}</span>
+        <button class="btn btn-ghost btn-icon" data-deldop="${esc(o.id)}" aria-label="Borrar esta operación"${o.type === "start" && x.ops.filter(y => y.type === "start").length === 1 ? " disabled" : ""}>${ic("trash")}</button></li>`).join("")}</ul></div>
+    </div>`,
+    foot: `<button class="btn btn-ghost btn-danger" id="debtDel">${ic("trash")}Eliminar</button><button class="btn" id="debtEdit">Editar</button>`,
+    mount: el => {
+      $$("[data-dop]", el).forEach(b => b.addEventListener("click", () => openDebtOp(x.id, b.dataset.dop)));
+      $$("[data-deldop]", el).forEach(b => b.addEventListener("click", () => { commit(d => M.removeDebtOp(d, x.id, b.dataset.deldop), "Operación borrada"); openDebt(x.id); }));
+      $("#debtEdit", el).addEventListener("click", () => openDebtForm(x));
+      $("#debtDel", el).addEventListener("click", () => { closeSheet(); commit(d => M.removeDebt(d, x.id), `Deuda con ${x.who} eliminada`); });
+      $("#mkFixed", el)?.addEventListener("click", () => openFixedForm(null, { name: `Cuota ${x.who}`, amount: x.monthly, type: "out", cat: "Otros gastos", debt: x.id }));
+    },
+  });
+}
+
+function openDebtOp(id, type) {
+  const x = D.debts.find(y => y.id === id), s = M.debtState(x), owe = x.dir === "owe";
+  const title = type === "pay" ? (owe ? "Registrar pago" : "Registrar cobro") : (owe ? "Me prestan más" : "Le presto más");
+  openSheet({
+    title,
+    body: `<form class="form" id="dopForm" novalidate><p class="muted">${esc(x.who)} · ${owe ? "te queda" : "le queda"} ${fmt(s.remaining)}</p>
+      ${moneyField("amount", "Importe", type === "pay" && x.monthly ? centsToInput(Math.min(x.monthly, s.remaining)) : "", { big: true, auto: true, hint: type === "pay" ? `Para saldarla del todo: ${fmt(s.remaining)}` : "" })}
+      ${type === "pay" ? `<button type="button" class="link" id="payAll" style="justify-self:start">Pagar todo lo pendiente</button>` : ""}
+      <fieldset class="field"><legend>${(owe && type === "pay") || (!owe && type === "add") ? "¿De qué cuenta sale?" : "¿En qué cuenta entra?"}</legend>${accountChips("account", D.accounts[0].id === "cash" && D.accounts[1] ? D.accounts[1].id : D.accounts[0].id, { none: true, noneLabel: "Ninguna" })}</fieldset>
+      ${dateField(today())}${textField("note", "Nota", "", { optional: true, max: 80 })}<button type="submit" hidden></button></form>`,
+    foot: `<button class="btn btn-ghost" id="dopBack">${ic("left")}Atrás</button><button class="btn btn-primary" id="dopSave">Guardar</button>`,
+    mount: el => {
+      const form = $("#dopForm", el); wireDate(form);
+      $("#payAll", el)?.addEventListener("click", () => { form.elements.amount.value = centsToInput(s.remaining); });
+      $("#dopBack", el).addEventListener("click", () => openDebt(id));
+      const save = () => {
+        const amount = U.parseMoney(form.elements.amount.value), date = form.elements.date.value;
+        const errs = {};
+        if (!(amount > 0)) errs.amount = Number.isNaN(amount) ? "Escribe el importe solo con números." : "Escribe un importe mayor que 0.";
+        else if (type === "pay" && amount > s.remaining) errs.amount = `Solo quedan ${fmt(s.remaining)} pendientes.`;
+        if (!U.isDate(date)) errs.date = "Elige una fecha válida.";
+        if (!setErrors(form, errs)) return;
+        const done = type === "pay" && amount === s.remaining;
+        commit(d => M.addDebtOp(d, id, { type, amount, date, note: form.elements.note.value.trim() }, radio(form, "account")), done ? (owe ? `¡Deuda con ${x.who} saldada!` : `${x.who} ya te lo ha devuelto todo`) : "Guardado");
+        openDebt(id);
+      };
+      $("#dopSave", el).addEventListener("click", save);
+      form.addEventListener("submit", e => { e.preventDefault(); save(); });
+    },
+  });
+}
+
+/* ======================================================================
+   Fixed expenses and income
+   ====================================================================== */
+const chargeLabel = date => {
+  if (!date) return "";
+  const days = Math.round((Date.parse(date + "T00:00:00") - Date.parse(today() + "T00:00:00")) / 864e5);
+  return days === 0 ? "Hoy" : days === 1 ? "Mañana" : days < 7 ? `En ${days} días` : new Date(date + "T00:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+};
+
+function viewFixed() {
+  const t = today(), s = M.fixedSummary(D, t), adv = analyze(D, t);
+  const sugg = adv.metrics.recurring || [];
+  const items = D.fixed.map(f => ({ f, next: M.nextCharge(f, t) })).sort((a, b) => (a.f.paused - b.f.paused) || String(a.next || "9999").localeCompare(String(b.next || "9999")));
+  const out = items.filter(x => x.f.type !== "in"), inc = items.filter(x => x.f.type === "in");
+  const row = ({ f, next }) => `<button class="fx" data-act="fixed" data-id="${esc(f.id)}">
+    <span class="tx-ic ${f.type === "in" ? "ic-in" : "ic-out"}">${ic(f.debt ? "bank" : f.type === "in" ? "down" : "swap")}</span>
+    <span class="tx-main"><b>${esc(f.name)}</b><small>${M.FREQS[f.freq]} · ${esc(acctName(f.account))}${f.auto ? " · se apunta solo" : ""}${f.paused ? " · en pausa" : ""}</small></span>
+    <span class="tx-amt num">${fmt(f.amount)}<small>${f.paused ? "Pausado" : chargeLabel(next)}</small></span></button>`;
+  return `<section class="section" style="padding-top:8px">
+    ${D.fixed.length ? `<div class="stats3">
+      <div class="stat"><h3>Gastos fijos al mes</h3><div class="mid num">${fmt0(s.monthlyOut)}</div>${adv.metrics.avgIn || s.monthlyIn ? `<div class="delta"><span>${fmtPct(s.monthlyOut / Math.max(adv.metrics.avgIn, s.monthlyIn))} de tus ingresos</span></div>` : ""}</div>
+      <div class="stat"><h3>Pagado este mes</h3><div class="mid num">${fmt0(s.paidThisMonth)}</div></div>
+      <div class="stat"><h3>Queda este mes</h3><div class="mid num">${fmt0(s.leftThisMonth)}</div></div>
+    </div>` : `<div class="empty"><b>Tus gastos de cada mes, de un vistazo</b><span>Alquiler, móvil, gimnasio, Netflix, Spotify… Apúntalos una vez y verás cuánto te cuestan al mes y cuándo toca el próximo cobro. Si quieres, se apuntan solos en Movimientos.</span><div class="btns"><button class="btn btn-primary" data-act="newFixed">${ic("plus")}Añadir gasto fijo</button></div></div>`}
+  </section>
+  ${sugg.length ? `<section class="section"><div class="sec-head"><h2>Detectados en tus movimientos</h2><span class="sub">Se repiten casi cada mes</span></div>
+    <div class="chips">${sugg.slice(0, 6).map(r => `<button class="btn" data-act="fixedSuggest" data-name="${esc(r.name)}" data-amount="${r.monthly}">${ic("plus")}${esc(r.name)} · ${fmt0(r.monthly)}</button>`).join("")}</div></section>` : ""}
+  ${D.fixed.length ? `<section class="section"><div class="sec-head"><h2>Gastos fijos</h2><button class="btn btn-ghost" data-act="newFixed">${ic("plus")}Añadir</button></div>
+    ${out.length ? `<div class="txl">${out.map(row).join("")}</div>` : `<p class="muted">Aún no tienes gastos fijos.</p>`}</section>
+  <section class="section"><div class="sec-head"><h2>Ingresos fijos</h2><button class="btn btn-ghost" data-act="newFixed" data-type="in">${ic("plus")}Añadir</button></div>
+    ${inc.length ? `<div class="txl">${inc.map(row).join("")}</div>` : `<p class="muted">Nómina, beca o paga: añádelos para saber con qué cuentas cada mes.</p>`}</section>` : ""}`;
+}
+
+function openFixedForm(existing, prefill = {}) {
+  const x = existing, edit = !!x;
+  const f = x ? { ...x } : { type: prefill.type || "out", name: prefill.name || "", amount: prefill.amount || 0, freq: "monthly", start: today(), account: (D.accounts.find(a => a.kind === "card") || D.accounts[0]).id, cat: prefill.cat || "", auto: true, debt: prefill.debt };
+  const render = () => {
+    const cats = M.CATS[f.type === "in" ? "in" : "out"];
+    if (!cats.includes(f.cat)) f.cat = f.type === "in" ? "Nómina" : (f.debt ? "Otros gastos" : "Suscripciones");
+    return `<form class="form" id="fxForm" novalidate>
+      ${f.debt ? `<p class="hint">Cada cobro se apuntará como pago de la deuda.</p>` : `<div class="seg full type" role="radiogroup" aria-label="Tipo"><label><input type="radio" name="type" value="out"${f.type !== "in" ? " checked" : ""}><span>Gasto fijo</span></label><label><input type="radio" name="type" value="in"${f.type === "in" ? " checked" : ""}><span>Ingreso fijo</span></label></div>`}
+      ${textField("name", "Nombre", f.name, { placeholder: f.type === "in" ? "Ej. Beca, nómina" : "Ej. Netflix, alquiler, gimnasio", max: 40, auto: !edit && !f.name })}
+      ${moneyField("amount", "Importe de cada cobro", f.amount ? centsToInput(f.amount) : "", { big: true, auto: !edit && !!f.name })}
+      <fieldset class="field"><legend>Cada cuánto</legend><div class="chips">${Object.entries(M.FREQS).map(([k, l]) => `<label><input type="radio" name="freq" value="${k}"${f.freq === k ? " checked" : ""}><span>${l}</span></label>`).join("")}</div><small class="err" data-err="freq"></small></fieldset>
+      <label class="field"><span class="lbl">${edit ? "Fecha del primer cobro" : "¿Qué día se cobra? Elige el próximo cobro o uno reciente"}</span><input class="in" type="date" name="start" value="${esc(f.start)}"><small class="hint" id="fxHint"></small><small class="err" data-err="start"></small></label>
+      <fieldset class="field"><legend>${f.type === "in" ? "Se cobra en" : "Se paga con"}</legend>${accountChips("account", f.account)}<small class="err" data-err="account"></small></fieldset>
+      ${f.debt ? "" : `<fieldset class="field"><legend>Categoría</legend><div class="chips">${cats.map(c => `<label><input type="radio" name="cat" value="${esc(c)}"${c === f.cat ? " checked" : ""}><span>${esc(c)}</span></label>`).join("")}</div></fieldset>`}
+      <label class="check"><input type="checkbox" name="auto"${f.auto ? " checked" : ""}><span>Apuntarlo solo en Movimientos cada vez que toque. Así no tienes que acordarte.</span></label>
+      ${edit ? `<label class="check"><input type="checkbox" name="paused"${f.paused ? " checked" : ""}><span>En pausa (por ejemplo, si lo has dado de baja temporalmente).</span></label>` : ""}
+      <button type="submit" hidden></button></form>`;
+  };
+  openSheet({
+    title: edit ? f.name : f.type === "in" ? "Nuevo ingreso fijo" : "Nuevo gasto fijo", body: render(),
+    foot: `${edit ? `<button class="btn btn-ghost btn-danger" id="fxDel">${ic("trash")}Eliminar</button>` : ""}<button class="btn btn-primary" id="fxSave">${edit ? "Guardar cambios" : "Guardar"}</button>`,
+    mount: el => {
+      const read = form => {
+        const v = n => form.elements[n]?.value?.trim() ?? "";
+        f.name = v("name"); f.amount = U.parseMoney(v("amount")); f.freq = radio(form, "freq") || f.freq; f.start = v("start");
+        f.account = radio(form, "account") || f.account; f.cat = radio(form, "cat") || f.cat; f.auto = form.elements.auto.checked;
+        if (form.elements.paused) f.paused = form.elements.paused.checked;
+      };
+      const hint = form => {
+        const h = $("#fxHint", form); if (!h) return;
+        read(form);
+        if (!U.isDate(f.start) || !M.FREQS[f.freq]) { h.textContent = ""; return; }
+        const n = M.nextCharge({ ...f, posted: edit ? x.posted : today() }, today());
+        h.textContent = n ? `Próximo cobro: ${new Date(n + "T00:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}${f.freq !== "weekly" && f.amount > 0 && f.freq !== "monthly" ? ` · equivale a ${fmt0(M.fixedMonthly(f))} al mes` : ""}` : "";
+      };
+      const wire = () => {
+        const form = $("#fxForm", el);
+        form.addEventListener("change", e => {
+          if (e.target.name === "type") { read(form); f.type = e.target.value; $("#sheetBody").innerHTML = render(); wire(); return; }
+          hint(form);
+        });
+        form.addEventListener("input", e => { if (e.target.name === "amount") hint(form); });
+        form.addEventListener("submit", e => { e.preventDefault(); save(); });
+        hint(form);
+      };
+      const save = () => {
+        const form = $("#fxForm", el); read(form);
+        if (!setErrors(form, M.validateFixed(D, f))) return;
+        const clean = { type: f.type === "in" ? "in" : "out", name: f.name, amount: f.amount, freq: f.freq, start: f.start, account: f.account, cat: f.cat, auto: !!f.auto, paused: !!f.paused };
+        if (f.debt) clean.debt = f.debt;
+        closeSheet();
+        view.tab === "movimientos" || setTab("movimientos");
+        view.movTab = "fixed";
+        if (edit) commit(d => { const y = d.fixed.find(z => z.id === x.id); Object.assign(y, clean); if (!y.posted) y.posted = today(); }, "Gasto fijo guardado");
+        // New items only log charges from today on: past ones are probably already in Movimientos.
+        else commit(d => d.fixed.push({ id: U.uid(), ...clean, posted: today() }), `${clean.name} añadido a tus ${clean.type === "in" ? "ingresos" : "gastos"} fijos`);
+      };
+      wire();
+      $("#fxSave", el).addEventListener("click", save);
+      $("#fxDel", el)?.addEventListener("click", () => { closeSheet(); commit(d => { d.fixed = d.fixed.filter(z => z.id !== x.id); }, `${x.name} eliminado de tus fijos`); });
+    },
+  });
+}
+
+/** Logs fixed charges that came due since the last visit. Runs on sign-in and when the day changes. */
+let fixedCheckedOn = "";
+function runFixed() {
+  if (!session || !D) return;
+  const t = today();
+  if (fixedCheckedOn === t) return;
+  fixedCheckedOn = t;
+  const created = M.postFixed(D, t);
+  if (!created.length) { session.save(); return; }
+  session.save(); renderView();
+  toast(created.length === 1 ? `Apuntado tu gasto fijo «${created[0].concept}»` : `Apuntados ${created.length} gastos fijos: ${[...new Set(created.map(c => c.concept))].slice(0, 3).join(", ")}${created.length > 3 ? "…" : ""}`);
 }
 
 /* ======================================================================

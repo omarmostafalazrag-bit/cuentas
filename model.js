@@ -1,7 +1,7 @@
 // The data model and every calculation on it. Pure functions only: no DOM, no storage.
 // Money is always integer cents. Quantities (shares, coins, grams) are plain numbers.
 
-import { ym, uid, sum, addMonths, isDate } from "./util.js?v=5";
+import { ym, uid, sum, addMonths, addDays, isDate, daysInMonth } from "./util.js?v=6";
 
 export const SCHEMA = 2;
 
@@ -39,6 +39,7 @@ export function emptyData() {
     tx: [], assets: [], budgets: {},
     settings: { onboarded: false },
     market: { watch: [], tdKey: "" },
+    debts: [], fixed: [],
     quotes: {},
   };
 }
@@ -57,6 +58,8 @@ export function migrate(d) {
   out.market = { ...base.market, ...(d.market || {}) };
   if (!Array.isArray(out.market.watch)) out.market.watch = [];
   out.quotes = d.quotes && typeof d.quotes === "object" ? d.quotes : {};
+  out.debts = Array.isArray(d.debts) ? d.debts.map(x => ({ ...x, ops: Array.isArray(x.ops) ? x.ops : [] })) : [];
+  out.fixed = Array.isArray(d.fixed) ? d.fixed.filter(f => f && f.id && isDate(f.start) && f.amount > 0) : [];
   out.seq = Math.max(Number(d.seq) || 0, out.tx.length + out.assets.length);
   return out;
 }
@@ -66,7 +69,7 @@ export const nextSeq = d => (d.seq = (d.seq || 0) + 1);
 /* ---------------- movements and accounts ---------------- */
 
 /** True when a movement counts as real income or spending (not a transfer, an investment or an adjustment). */
-export const isStat = t => (t.type === "in" || t.type === "out") && !t.asset && !t.adj;
+export const isStat = t => (t.type === "in" || t.type === "out") && !t.asset && !t.adj && !t.debt;
 
 export function accountBalances(d, upto) {
   const bal = Object.fromEntries(d.accounts.map(a => [a.id, a.initial || 0]));
@@ -170,7 +173,7 @@ export function savingsSummary(d, upto) {
   return { total, invested, gain: total - invested, byKind, items, liquidSavings };
 }
 
-export const netWorth = (d, upto) => sum(Object.values(accountBalances(d, upto))) + savingsSummary(d, upto).total;
+export const netWorth = (d, upto) => { const db = debtsSummary(d); return sum(Object.values(accountBalances(d, upto))) + savingsSummary(d, upto).total + db.owed - db.owe; };
 
 export function validateAssetOp(a, op) {
   const e = {};
@@ -258,4 +261,152 @@ export function importLegacy(d, legacy) {
   }
   for (const [k, v] of Object.entries(legacy.budgets || {})) if (CATS.out.includes(k) && v > 0) d.budgets[k] = v;
   return n;
+}
+
+/* ---------------- debts ---------------- */
+
+export const DEBT_KINDS = { person: "Persona", bank: "Banco o préstamo", card: "Tarjeta de crédito", other: "Otro" };
+
+/** Folds a debt's operations: start and add increase it, pay reduces it (never below 0). */
+export function debtState(debt, upto) {
+  let total = 0, paid = 0;
+  for (const op of [...debt.ops].sort(opOrder)) {
+    if (upto && op.date > upto) continue;
+    if (op.type === "start" || op.type === "add") total += op.amount || 0;
+    else if (op.type === "pay") paid += op.amount || 0;
+  }
+  const remaining = Math.max(0, total - paid);
+  return { total, paid: Math.min(paid, total), remaining, progress: total > 0 ? Math.min(1, paid / total) : 0, done: total > 0 && remaining === 0 };
+}
+
+export function debtsSummary(d) {
+  let owe = 0, owed = 0, monthly = 0;
+  const items = (d.debts || []).map(x => { const s = debtState(x); if (x.dir === "owe") { owe += s.remaining; if (!s.done) monthly += x.monthly || 0; } else owed += s.remaining; return { debt: x, ...s }; });
+  return { owe, owed, monthly, items };
+}
+
+export function validateDebt(x) {
+  const e = {};
+  if (!String(x.who || "").trim()) e.who = x.dir === "owe" ? "Escribe a quién le debes." : "Escribe quién te debe.";
+  if (!(x.amount > 0)) e.amount = Number.isNaN(x.amount) ? "Escribe el importe solo con números." : "Escribe un importe mayor que 0.";
+  if (!isDate(x.date)) e.date = "Elige una fecha válida.";
+  if (x.due && !isDate(x.due)) e.due = "Elige una fecha válida o déjala vacía.";
+  if (x.apr != null && !(x.apr >= 0 && x.apr < 100)) e.apr = "Escribe el interés como un número, por ejemplo 7,5.";
+  if (x.monthly != null && Number.isNaN(x.monthly)) e.monthly = "Escribe la cuota solo con números.";
+  return e;
+}
+
+/**
+ * Records a debt operation. With an account, the money also moves there through a linked
+ * movement that never counts as income or spending (borrowing is not income; repaying is not spending).
+ */
+export function addDebtOp(d, debtId, op, account) {
+  const x = d.debts.find(y => y.id === debtId);
+  const full = { id: uid(), seq: nextSeq(d), note: "", ...op };
+  if (account && op.amount > 0) {
+    // owe: money in when it starts or grows, out when you pay. owed: the reverse.
+    const moneyIn = (x.dir === "owe") === (op.type !== "pay");
+    const verb = x.dir === "owe" ? (op.type === "pay" ? "Pago a" : "Préstamo de") : (op.type === "pay" ? "Cobro de" : "Préstamo a");
+    const t = { id: uid(), seq: nextSeq(d), type: moneyIn ? "in" : "out", amount: op.amount, account, cat: "Deudas", concept: `${verb} ${x.who}`, date: op.date, note: "", debt: debtId };
+    d.tx.push(t); full.tx = t.id;
+  }
+  x.ops.push(full);
+  return full;
+}
+export function removeDebtOp(d, debtId, opId) {
+  const x = d.debts.find(y => y.id === debtId);
+  const op = x.ops.find(o => o.id === opId);
+  x.ops = x.ops.filter(o => o.id !== opId);
+  if (op?.tx) d.tx = d.tx.filter(t => t.id !== op.tx);
+  return op;
+}
+export function removeDebt(d, debtId) {
+  const x = d.debts.find(y => y.id === debtId); if (!x) return;
+  const linked = new Set(x.ops.map(o => o.tx).filter(Boolean));
+  d.debts = d.debts.filter(y => y.id !== debtId);
+  d.tx = d.tx.filter(t => !linked.has(t.id));
+  for (const f of d.fixed) if (f.debt === debtId) delete f.debt;
+}
+
+/* ---------------- fixed (recurring) expenses and income ---------------- */
+
+export const FREQS = { monthly: "Cada mes", quarterly: "Cada 3 meses", yearly: "Cada año", weekly: "Cada semana" };
+const PER_MONTH = { monthly: 1, quarterly: 1 / 3, yearly: 1 / 12, weekly: 52 / 12 };
+export const fixedMonthly = f => Math.round(f.amount * (PER_MONTH[f.freq] ?? 1));
+
+/** Charge dates of a fixed item in (fromExclusive, toInclusive], oldest first, at most `cap`. */
+export function occurrences(f, fromExclusive, toInclusive, cap = 60) {
+  const out = [];
+  if (!isDate(f.start) || toInclusive < f.start) return out;
+  const [sy, sm, sd] = f.start.split("-").map(Number);
+  const push = s => { if (s > fromExclusive && s <= toInclusive && s >= f.start && (!f.end || s <= f.end)) out.push(s); };
+  if (f.freq === "weekly") {
+    let cur = f.start, guard = 0;
+    if (fromExclusive > f.start) { const days = Math.floor((Date.parse(fromExclusive) - Date.parse(f.start)) / 864e5); cur = addDays(f.start, Math.max(0, Math.floor(days / 7) * 7)); }
+    while (cur <= toInclusive && out.length < cap && guard++ < 1000) { push(cur); cur = addDays(cur, 7); }
+    return out;
+  }
+  const step = f.freq === "yearly" ? 12 : f.freq === "quarterly" ? 3 : 1;
+  let key = `${sy}-${String(sm).padStart(2, "0")}`, guard = 0;
+  if (fromExclusive > f.start) { // jump close to the window instead of walking from the start
+    const [fy, fm] = fromExclusive.split("-").map(Number);
+    const diff = (fy - sy) * 12 + (fm - sm);
+    key = addMonths(key, Math.max(0, Math.floor(diff / step) * step - step));
+  }
+  while (out.length < cap && guard++ < 2000) {
+    const day = Math.min(sd, daysInMonth(key));
+    const s = `${key}-${String(day).padStart(2, "0")}`;
+    if (s > toInclusive) break;
+    push(s);
+    key = addMonths(key, step);
+  }
+  return out;
+}
+/** Next charge on or after `today` (today counts only if it has not been logged yet). */
+export function nextCharge(f, today) {
+  const from = f.posted && f.posted >= today ? today : addDays(today, -1);
+  return occurrences(f, from, addDays(today, 800), 1)[0] || null;
+}
+
+export function validateFixed(d, f) {
+  const e = {};
+  if (!String(f.name || "").trim()) e.name = "Ponle un nombre, por ejemplo «Netflix».";
+  if (!(f.amount > 0)) e.amount = Number.isNaN(f.amount) ? "Escribe el importe solo con números." : "Escribe un importe mayor que 0.";
+  if (!isDate(f.start)) e.start = "Elige la fecha del primer cobro.";
+  if (!FREQS[f.freq]) e.freq = "Elige cada cuánto se paga.";
+  if (!d.accounts.some(a => a.id === f.account)) e.account = "Elige con qué cuenta se paga.";
+  return e;
+}
+
+/**
+ * Logs every charge that has come due since the last run (only items with auto on).
+ * Idempotent: running it twice on the same day creates nothing new.
+ */
+export function postFixed(d, today) {
+  const created = [];
+  for (const f of d.fixed) {
+    if (!f.auto || f.paused) continue;
+    const since = f.posted || addDays(f.start, -1);
+    for (const date of occurrences(f, since, today, 24)) {
+      if (f.debt && d.debts.some(x => x.id === f.debt)) {
+        const op = addDebtOp(d, f.debt, { type: "pay", date, amount: f.amount, note: f.name }, f.account);
+        const t = d.tx.find(x => x.id === op.tx); if (t) { t.fixed = f.id; t.concept = f.name; created.push(t); }
+      } else {
+        const t = { id: uid(), seq: nextSeq(d), type: f.type === "in" ? "in" : "out", amount: f.amount, account: f.account, cat: f.cat || (f.type === "in" ? "Otros ingresos" : "Suscripciones"), concept: f.name, date, note: "", fixed: f.id };
+        d.tx.push(t); created.push(t);
+      }
+    }
+    if (today > since) f.posted = today;
+  }
+  return created;
+}
+
+export function fixedSummary(d, today) {
+  const active = d.fixed.filter(f => !f.paused);
+  const out = active.filter(f => f.type !== "in"), inc = active.filter(f => f.type === "in");
+  const monthKey = ym(today);
+  const first = `${monthKey}-01`, last = `${monthKey}-${String(daysInMonth(monthKey)).padStart(2, "0")}`;
+  let dueThisMonth = 0, paidThisMonth = 0;
+  for (const f of out) for (const s of occurrences(f, addDays(first, -1), last)) { dueThisMonth += f.amount; if (s <= today) paidThisMonth += f.amount; }
+  return { monthlyOut: sum(out.map(fixedMonthly)), monthlyIn: sum(inc.map(fixedMonthly)), dueThisMonth, paidThisMonth, leftThisMonth: dueThisMonth - paidThisMonth };
 }
