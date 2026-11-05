@@ -1,0 +1,17 @@
+{
+  "name": "Cuentas claras",
+  "short_name": "Cuentas",
+  "description": "Tus ingresos y gastos, presupuestos por categoría y evolución mensual.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F6F3EC",
+  "theme_color": "#F6F3EC",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
