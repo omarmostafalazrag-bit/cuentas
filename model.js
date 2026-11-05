@@ -1,7 +1,7 @@
 // The data model and every calculation on it. Pure functions only: no DOM, no storage.
 // Money is always integer cents. Quantities (shares, coins, grams) are plain numbers.
 
-import { ym, uid, sum, addMonths, isDate } from "./util.js";
+import { ym, uid, sum, addMonths, isDate } from "./util.js?v=5";
 
 export const SCHEMA = 2;
 
@@ -38,6 +38,8 @@ export function emptyData() {
     ],
     tx: [], assets: [], budgets: {},
     settings: { onboarded: false },
+    market: { watch: [], tdKey: "" },
+    quotes: {},
   };
 }
 
@@ -52,6 +54,9 @@ export function migrate(d) {
   out.assets = Array.isArray(d.assets) ? d.assets.map(a => ({ ...a, ops: Array.isArray(a.ops) ? a.ops : [] })) : [];
   out.budgets = d.budgets && typeof d.budgets === "object" ? d.budgets : {};
   out.settings = { ...base.settings, ...(d.settings || {}) };
+  out.market = { ...base.market, ...(d.market || {}) };
+  if (!Array.isArray(out.market.watch)) out.market.watch = [];
+  out.quotes = d.quotes && typeof d.quotes === "object" ? d.quotes : {};
   out.seq = Math.max(Number(d.seq) || 0, out.tx.length + out.assets.length);
   return out;
 }
@@ -143,6 +148,10 @@ export function assetState(a, upto) {
       else if (op.type === "value") value = op.value || 0;
     }
   }
+  if (unit && a.live && a.live.price > 0 && !upto) {
+    const lastManual = a.ops.filter(o => o.type === "price" || o.type === "buy" || o.type === "sell").map(o => o.date).sort().pop() || "";
+    if (String(a.live.at || "").slice(0, 10) >= lastManual) price = a.live.price;
+  }
   if (unit) value = units * purity * price;
   value = Math.round(value); invested = Math.round(invested);
   return { units, invested, price, value, gain: value - invested, gainPct: invested > 0 ? (value - invested) / invested : 0 };
@@ -205,6 +214,27 @@ export function removeAssetOp(d, assetId, opId) {
   a.ops = a.ops.filter(o => o.id !== opId);
   if (op?.tx) d.tx = d.tx.filter(t => t.id !== op.tx);
   return op;
+}
+
+/** Asset key for live prices, or "" when the asset is not linked to a market. */
+export function assetLinkKey(a) {
+  if (a.kind === "metal") { const s = { Oro: "XAU", Plata: "XAG", Platino: "XPT", Paladio: "XPD" }[a.metal || "Oro"]; return s ? `metal:${s}` : ""; }
+  return a.link ? `${a.link.src}:${a.link.id}` : "";
+}
+
+/** Writes fresh quotes into the cache and into every linked asset. Returns how many assets changed. */
+export function applyQuotes(d, quotes) {
+  let n = 0;
+  for (const q of Object.values(quotes)) {
+    if (!q || !q.key || !(q.price > 0)) continue;
+    d.quotes[q.key] = { price: q.price, change: q.change ?? null, at: q.at, name: q.name, symbol: q.symbol };
+  }
+  for (const a of d.assets) {
+    const k = assetLinkKey(a); const q = k && d.quotes[k];
+    if (!q) continue;
+    if (!a.live || a.live.price !== q.price || a.live.at !== q.at) { a.live = { price: q.price, change: q.change, at: q.at }; n++; }
+  }
+  return n;
 }
 
 /* ---------------- history for charts ---------------- */

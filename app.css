@@ -397,3 +397,59 @@ details.data summary{cursor:pointer;width:max-content}
   .sheet:not(.on){opacity:0;transform:none}
   .track i{transition:none}
 }
+
+/* ---------- market ---------- */
+.live-state{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
+.live-state i{width:8px;height:8px;border-radius:50%;background:var(--in);box-shadow:0 0 0 0 color-mix(in oklab,var(--in) 50%,transparent);animation:pulse 2s ease-out infinite}
+.live-state i.wait{background:var(--warn);animation:none}
+.live-state i.off{background:var(--ink-3);animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in oklab,var(--in) 45%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.livedot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--in);vertical-align:2px;margin-left:4px}
+.qlist{display:grid}
+.qrow,.res{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:12px;align-items:center;width:100%;padding:12px 4px;border:0;border-bottom:1px solid var(--rule);background:none;text-align:left;transition:background-color 120ms ease}
+.res{grid-template-columns:auto minmax(0,1fr) auto;color:var(--ink)}
+@media (hover:hover) and (pointer:fine){.qrow:hover,.res:hover{background:var(--sunk)}}
+.qic{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;font-weight:600;font-size:14px;background:var(--sunk);color:var(--ink-2);flex:none}
+.qic.metal{background:color-mix(in oklab,var(--k-metal) 22%,var(--surface));color:var(--k-metal)}
+.qic.crypto{background:color-mix(in oklab,var(--k-crypto) 20%,var(--surface));color:var(--k-crypto)}
+.qic.stock{background:color-mix(in oklab,var(--k-stock) 20%,var(--surface));color:var(--k-stock)}
+.qic svg{width:18px;height:18px}
+.qmain{min-width:0}
+.qmain b{display:block;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qmain small{display:block;color:var(--ink-3);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qval{text-align:right;white-space:nowrap;display:grid;justify-items:end;gap:3px}
+.qval b{font-weight:500;transition:color 600ms ease}
+.spark{display:block;width:72px;height:26px}
+.chg{display:inline-block;font-size:12.5px;font-weight:500;padding:1px 7px;border-radius:6px;font-variant-numeric:tabular-nums}
+.chg.up{color:var(--in);background:var(--in-soft)}
+.chg.down{color:var(--out);background:var(--out-soft)}
+.chg.flat{color:var(--ink-3);background:var(--sunk)}
+.qrow.flash-up .qval b{animation:flashUp 1.2s ease-out}
+.qrow.flash-down .qval b{animation:flashDown 1.2s ease-out}
+@keyframes flashUp{0%{color:var(--in)}100%{color:var(--ink)}}
+@keyframes flashDown{0%{color:var(--out)}100%{color:var(--ink)}}
+.results{margin-top:10px;border:1px solid var(--rule);border-radius:var(--r);background:var(--surface);padding:0 12px;max-height:60vh;overflow:auto}
+.res-group{font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3);padding:14px 0 4px}
+.res svg.i{color:var(--ink-3)}
+.connect{display:grid;gap:12px;padding:18px;border:1px solid var(--rule);border-radius:var(--r);background:var(--surface);max-width:560px}
+.connect ol{padding-left:20px;color:var(--ink-2);display:grid;gap:4px}
+.qhead{display:grid;gap:6px}
+.qmeta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13.5px}
+.qchart{position:relative;min-height:190px}
+.qchart svg{display:block;touch-action:none;cursor:crosshair}
+.qrange{font-size:13.5px;color:var(--ink-2);margin-bottom:6px;display:flex;gap:8px;align-items:center}
+.axis-t{fill:var(--ink-3);font-size:11px;font-family:var(--sans)}
+.qtip{position:absolute;top:0;right:0;font-size:13px;font-weight:500;background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:3px 8px;opacity:0;transition:opacity 120ms ease;font-variant-numeric:tabular-nums}
+.qtip.on{opacity:1}
+.pos-box{border:1px solid var(--rule);border-radius:var(--r);padding:2px 14px;background:var(--surface)}
+.linked{display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;border:1px solid var(--rule);border-radius:var(--r);background:var(--surface);text-align:left;color:var(--ink)}
+.linked > svg:first-child{color:var(--in)}
+.linked span{flex:1;min-width:0}
+.linked b{display:block;font-weight:500}
+.linked small{display:block;color:var(--ink-3);font-size:13px}
+button.linked{transition:background-color 120ms ease}
+@media (hover:hover){button.linked:hover{background:var(--sunk)}}
+@media (max-width:760px){
+  .qrow{grid-template-columns:auto minmax(0,1fr) auto}
+  .qrow .spark{display:none}
+}

@@ -10,7 +10,15 @@ export const fmt = c => eur.format((c || 0) / 100);
 /** Cents → "1.235 €". */
 export const fmt0 = c => eur0.format(Math.round((c || 0) / 100));
 /** Signed, with a real minus sign. */
-export const fmtSigned = (c, digits = 2) => (c < 0 ? "−" : c > 0 ? "+" : "") + (digits ? fmt(Math.abs(c)) : fmt0(Math.abs(c)));
+export const fmtSigned = (c, digits = 2) => {
+  const shown = digits ? Math.round(c) : Math.round(c / 100) * 100; // the sign follows what is displayed, so no "−0 €"
+  return (shown < 0 ? "−" : shown > 0 ? "+" : "") + (digits ? fmt(Math.abs(c)) : fmt0(Math.abs(c)));
+};
+/** Signed percentage from a ratio (0.092 → "+9,2 %"), without "−0,0 %". */
+export const fmtPctSigned = (r, digits = 1) => {
+  const shown = Math.round(r * 100 * 10 ** digits);
+  return (shown < 0 ? "−" : shown > 0 ? "+" : "") + fmtPct(Math.abs(r), digits);
+};
 /** Cents without sign, with a minus when negative (for balances). */
 export const fmtBal = (c, digits = 0) => (c < 0 ? "−" : "") + (digits ? fmt(Math.abs(c)) : fmt0(Math.abs(c)));
 

@@ -2,8 +2,8 @@
 // It runs entirely on the device. It gives general financial-health guidance, never
 // buy/sell recommendations for specific products.
 
-import { ym, addMonths, daysInMonth, sum, fmt0, fmtPct, MONTHS } from "./util.js";
-import { isStat, monthTotals, categorySums, accountBalances, savingsSummary, ASSET_KINDS } from "./model.js";
+import { ym, addMonths, daysInMonth, sum, fmt0, fmtPct, MONTHS } from "./util.js?v=5";
+import { isStat, monthTotals, categorySums, accountBalances, savingsSummary, ASSET_KINDS } from "./model.js?v=5";
 
 const LEVEL = { critical: 0, warn: 1, info: 2, good: 3 };
 
@@ -165,7 +165,7 @@ export function analyze(d, today) {
     const stale = sav.items.filter(x => ASSET_KINDS[x.asset.kind].unit && x.units > 0 && daysSincePrice(x.asset, today) > 45);
     if (stale.length) add("info", "Precios sin actualizar",
       `${stale.map(x => x.asset.name).join(", ")} ${stale.length === 1 ? "lleva" : "llevan"} más de 45 días sin actualizar el precio.`,
-      "Entra en Ahorros y usa «Actualizar precio» para que tu patrimonio sea exacto.");
+      "Abre Mercado o Ahorros con conexión para traer el precio de hoy, o usa «Actualizar precio».");
   } else if (enoughData && monthsCovered !== null && monthsCovered >= 1) {
     add("info", "Aún no has registrado ahorros",
       "En Ahorros puedes apuntar el efectivo guardado, tus cuentas, acciones, criptomonedas u oro para ver tu patrimonio completo.", null);
@@ -207,7 +207,9 @@ export function analyze(d, today) {
 const clamp01 = x => Math.max(0, Math.min(1, x));
 function addDays30(today) { const [y, m, d] = today.split("-").map(Number); const t = new Date(y, m - 1, d - 30); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; }
 function daysSincePrice(a, today) {
-  const last = a.ops.filter(o => o.type === "price" || o.type === "buy" || o.type === "sell").map(o => o.date).sort().pop();
+  const dates = a.ops.filter(o => o.type === "price" || o.type === "buy" || o.type === "sell").map(o => o.date);
+  if (a.live?.at) dates.push(String(a.live.at).slice(0, 10));
+  const last = dates.sort().pop();
   if (!last) return 0;
   return Math.round((new Date(today + "T00:00:00") - new Date(last + "T00:00:00")) / 864e5);
 }

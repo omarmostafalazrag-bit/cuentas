@@ -1,10 +1,11 @@
 // Cuentas claras — UI layer. Renders from the in-memory data of the open profile and
 // writes every change through the encrypted Session.
 
-import * as U from "./util.js";
-import * as V from "./vault.js";
-import * as M from "./model.js";
-import { analyze, scoreWord } from "./advisor.js";
+import * as U from "./util.js?v=5";
+import * as V from "./vault.js?v=5";
+import * as M from "./model.js?v=5";
+import { analyze, scoreWord } from "./advisor.js?v=5";
+import * as Q from "./quotes.js?v=5";
 
 const { esc, fmt, fmt0, fmtBal, fmtSigned, fmtNum, fmtPct, sum } = U;
 const $ = (s, el = document) => el.querySelector(s);
@@ -16,6 +17,7 @@ const TABS = [
   { id: "inicio", label: "Inicio", icon: "home" },
   { id: "movimientos", label: "Movimientos", icon: "list" },
   { id: "ahorros", label: "Ahorros", icon: "vault" },
+  { id: "mercado", label: "Mercado", icon: "pulse" },
   { id: "asesor", label: "Asesor", icon: "spark" },
   { id: "perfil", label: "Perfil", icon: "user" },
 ];
@@ -279,12 +281,15 @@ function startSession(s) {
   view.month = U.ym(today());
   renderShell();
   if (!D.settings.onboarded) openOnboarding();
+  startPriceLoop();
 }
 
 async function lock(reason) {
   if (!session) return;
   closeSheet();
   try { await session.flush(); } catch {}
+  clearInterval(priceTimer);
+  Object.assign(live, { q: {}, top: [], status: {}, last: {}, errors: {}, prev: {}, query: "" });
   session.close(); session = null; D = null;
   history.replaceState(null, "", location.pathname);
   renderAuth();
@@ -318,7 +323,7 @@ function renderShell() {
   root.innerHTML = `
   <header class="top"><div class="wrap">
     <div class="brand"><div class="mark sm" aria-hidden="true"><span></span><span></span><span></span></div><span>Cuentas claras</span></div>
-    <nav class="tabs" aria-label="Secciones">${TABS.map(t => `<button class="tab" data-tab="${t.id}">${ic(t.icon)}${t.label}</button>`).join("")}</nav>
+    <nav class="tabs" aria-label="Secciones">${TABS.filter(t => t.id !== "perfil").map(t => `<button class="tab" data-tab="${t.id}">${ic(t.icon)}${t.label}</button>`).join("")}</nav>
     <div class="top-actions">
       <button class="btn btn-primary top-new" data-act="newTx">${ic("plus")}Nuevo movimiento</button>
       <button class="btn btn-ghost who" data-tab="perfil" aria-label="Perfil de ${esc(session.name)}"><span class="avatar">${initial}</span><span class="name">${esc(session.name)}</span></button>
@@ -326,7 +331,7 @@ function renderShell() {
     </div>
   </div></header>
   <main class="view wrap" id="view"></main>
-  <nav class="tabbar" aria-label="Secciones">${TABS.map(t => `<button data-tab="${t.id}">${ic(t.icon)}<span>${t.label}</span></button>`).join("")}</nav>
+  <nav class="tabbar" aria-label="Secciones">${TABS.filter(t => t.id !== "perfil").map(t => `<button data-tab="${t.id}">${ic(t.icon)}<span>${t.label}</span></button>`).join("")}</nav>
   <button class="fab" data-act="newTx" aria-label="Nuevo movimiento">${ic("plus")}</button>`;
   renderView();
 }
@@ -344,10 +349,11 @@ function renderView() {
   if (!session) return;
   $$("[data-tab]").forEach(b => { if (b.dataset.tab === view.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
   const el = $("#view"); if (!el) return;
-  const fn = { inicio: viewInicio, movimientos: viewMovs, ahorros: viewAhorros, asesor: viewAsesor, perfil: viewPerfil }[view.tab];
+  const fn = { inicio: viewInicio, movimientos: viewMovs, ahorros: viewAhorros, mercado: viewMercado, asesor: viewAsesor, perfil: viewPerfil }[view.tab];
   el.innerHTML = fn();
   document.title = `${TABS.find(t => t.id === view.tab).label} · Cuentas claras`;
   if (view.tab === "inicio") drawChart();
+  if (view.tab === "mercado") updateMarketClock();
 }
 
 /* ======================================================================
@@ -380,6 +386,8 @@ document.addEventListener("click", e => {
     case "csv": doCsv(); break;
     case "importCsv": openImportCsv(); break;
     case "deleteProfile": openDeleteProfile(); break;
+    case "tdRemove": D.market.tdKey = ""; session.save(); renderView(); toast("Clave de bolsa quitada"); break;
+    case "refreshPrices": refreshPrices({ force: true }).then(() => toast("Precios actualizados")); break;
     case "budgetsAll": setTab("movimientos"); view.movTab = "cats"; renderView(); break;
   }
 });
@@ -735,9 +743,9 @@ function viewAhorros() {
   const gainItems = sav.items.filter(x => !M.ASSET_KINDS[x.asset.kind].liquid && x.invested > 0);
   const g = sum(gainItems.map(x => x.gain)), inv = sum(gainItems.map(x => x.invested));
   return `<section class="section">
-    <div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Ahorros</h2><button class="btn btn-primary" data-act="newAsset">${ic("plus")}Añadir ahorro</button></div>
+    <div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Ahorros</h2><div class="actions-row" style="flex:0 0 auto">${D.assets.some(a => M.assetLinkKey(a)) ? `<button class="btn" data-act="refreshPrices">${ic("pulse")}Actualizar precios</button>` : ""}<button class="btn btn-primary" data-act="newAsset">${ic("plus")}Añadir ahorro</button></div></div>
     <div class="kicker-num">Total ahorrado e invertido</div><div class="big num">${fmt0(sav.total)}</div>
-    ${inv ? `<p class="muted" style="margin-top:8px">En inversiones has puesto ${fmt0(inv)} y ahora valen ${fmt0(inv + g)}: <b class="${g >= 0 ? "pos" : "neg"}">${fmtSigned(g, 0)} (${g >= 0 ? "+" : "−"}${fmtPct(Math.abs(g / inv), 1)})</b></p>` : ""}
+    ${inv ? `<p class="muted" style="margin-top:8px">En inversiones has puesto ${fmt0(inv)} y ahora valen ${fmt0(inv + g)}: <b class="${g >= 0 ? "pos" : "neg"}">${fmtSigned(g, 0)} (${U.fmtPctSigned(g / inv)})</b></p>` : ""}
     ${sav.total > 0 ? `<div class="alloc" role="img" aria-label="Reparto: ${kinds.map(k => `${M.ASSET_KINDS[k].short} ${fmtPct(sav.byKind[k] / sav.total)}`).join(", ")}">${kinds.map(k => `<i style="width:${sav.byKind[k] / sav.total * 100}%;background:var(--k-${k})"></i>`).join("")}</div>
     <div class="kinds">${kinds.map(k => `<div class="line"><span><i class="dot" style="background:var(--k-${k})"></i>${M.ASSET_KINDS[k].short}</span><b class="num">${fmt0(sav.byKind[k])} <span class="faint">${fmtPct(sav.byKind[k] / sav.total)}</span></b></div>`).join("")}</div>` : ""}
   </section>
@@ -746,8 +754,8 @@ function viewAhorros() {
     <div class="assets">${sav.items.filter(x => x.asset.kind === k).sort((a, b) => b.value - a.value).map(x => `
       <button class="asset" data-act="asset" data-id="${esc(x.asset.id)}">
         <span class="asset-ic" style="background:var(--k-${k})">${ic(KIND_ICON[k])}</span>
-        <span class="asset-main"><b>${esc(x.asset.name)}</b><small class="num">${assetSubtitle(x.asset, x)}</small></span>
-        <span class="asset-val num"><b>${fmt(x.value)}</b>${!M.ASSET_KINDS[k].liquid && x.invested > 0 ? `<small class="${x.gain >= 0 ? "pos" : "neg"}">${fmtSigned(x.gain, 0)} · ${x.gain >= 0 ? "+" : "−"}${fmtPct(Math.abs(x.gainPct), 1)}</small>` : ""}</span>
+        <span class="asset-main"><b>${esc(x.asset.name)}${x.asset.live ? ` <span class="livedot" title="Precio en directo"></span>` : ""}</b><small class="num">${assetSubtitle(x.asset, x)}${x.asset.live?.change != null ? ` · hoy ${x.asset.live.change > 0 ? "+" : x.asset.live.change < 0 ? "−" : ""}${Math.abs(x.asset.live.change).toLocaleString("es-ES", { maximumFractionDigits: 2 })} %` : ""}</small></span>
+        <span class="asset-val num"><b>${fmt(x.value)}</b>${!M.ASSET_KINDS[k].liquid && x.invested > 0 ? `<small class="${Math.round(x.gain / 100) > 0 ? "pos" : Math.round(x.gain / 100) < 0 ? "neg" : "faint"}">${fmtSigned(x.gain, 0)} · ${U.fmtPctSigned(x.gainPct)}</small>` : ""}</span>
       </button>`).join("")}</div></section>`).join("")}`;
 }
 
@@ -762,20 +770,23 @@ function openAssetKind() {
 
 const NAME_HINT = { cash: "Ej. Hucha de casa", bank: "Ej. Cuenta de ahorro", stock: "Ej. MSCI World o Apple", crypto: "Ej. Bitcoin", metal: "Ej. Lingote de 10 g", other: "Ej. Coche, reloj, cámara" };
 
-function openAssetForm(kind, existing) {
+function openAssetForm(kind, existing, prefill = {}) {
   const k = M.ASSET_KINDS[kind];
   const a = existing;
   const edit = !!a;
+  const linkable = kind === "stock" || kind === "crypto";
+  let link = a?.link || (prefill.link && prefill.link.src !== "metal" ? prefill.link : null);
   const purityOpts = (sel) => M.PURITIES.map(p => `<option value="${p.v}"${p.v === sel ? " selected" : ""}>${p.l}</option>`).join("");
-  let body = `<form class="form" id="assetForm" novalidate>${textField("name", "Nombre", a?.name || "", { placeholder: NAME_HINT[kind], max: 50, auto: !edit })}`;
+  let body = `<form class="form" id="assetForm" novalidate>${textField("name", "Nombre", a?.name || prefill.name || "", { placeholder: NAME_HINT[kind], max: 50, auto: !edit && !linkable })}`;
+  if (linkable) body += `<div class="field"><span class="lbl">Precio en directo <span class="opt">(recomendado)</span></span><div id="linkBox"></div></div>`;
   if (kind === "bank") body += `<div class="row2">${textField("entity", "Banco", a?.entity || "", { placeholder: "Ej. ING", optional: true, max: 40 })}${textField("apr", "Interés anual (TAE %)", a?.apr ? String(a.apr).replace(".", ",") : "", { placeholder: "Ej. 2,5", optional: true, max: 6 })}</div>`;
-  if (kind === "stock" || kind === "crypto") body += textField("ticker", "Símbolo", a?.ticker || "", { placeholder: kind === "crypto" ? "Ej. BTC" : "Ej. AAPL o IWDA", optional: true, max: 12 });
-  if (kind === "metal") body += `<div class="row2"><label class="field"><span class="lbl">Metal</span><select class="in" name="metal">${M.METALS.map(m => `<option${(a?.metal || "Oro") === m ? " selected" : ""}>${m}</option>`).join("")}</select></label>
+  if (linkable) body += textField("ticker", "Símbolo", a?.ticker || prefill.symbol || "", { placeholder: kind === "crypto" ? "Ej. BTC" : "Ej. AAPL o IWDA", optional: true, max: 12 });
+  if (kind === "metal") body += `<div class="row2"><label class="field"><span class="lbl">Metal</span><select class="in" name="metal">${M.METALS.map(m => `<option${(a?.metal || prefill.metal || "Oro") === m ? " selected" : ""}>${m}</option>`).join("")}</select></label>
     <label class="field"><span class="lbl">Pureza</span><select class="in" name="purity">${purityOpts(a?.purity ?? 0.999)}</select></label></div>`;
   if (!edit) {
     if (k.unit) {
-      body += `<div class="row2"><label class="field"><span class="lbl">${k.qty}</span><input class="in num" name="units" inputmode="decimal" autocomplete="off" placeholder="0"><small class="err" data-err="units"></small></label>
-        ${moneyField("price", k.priceLabel + " hoy", "", { hint: kind === "metal" ? "Busca «precio oro gramo» del día." : "" })}</div>
+      body += `<div class="row2"><label class="field"><span class="lbl">${k.qty}</span><input class="in num" name="units" inputmode="decimal" autocomplete="off" placeholder="0"${linkable || kind === "metal" ? "" : " autofocus"}><small class="err" data-err="units"></small></label>
+        ${moneyField("price", k.priceLabel + " hoy", "")}</div><p class="hint" id="liveHint"></p>
         ${moneyField("paid", "Lo que pagaste en total", "", { optional: true, hint: "Si lo dejas vacío, usamos el valor de hoy." })}`;
     } else {
       body += moneyField("value", kind === "other" ? "Lo que vale hoy" : "Cantidad que tienes", "", { big: kind !== "other" });
@@ -792,17 +803,61 @@ function openAssetForm(kind, existing) {
       const form = $("#assetForm", s);
       if (!edit) wireDate(form);
       $("#back", s)?.addEventListener("click", openAssetKind);
+      const hint = $("#liveHint", s);
+      const fillPrice = async (lk) => {
+        if (edit || !form.elements.price) return;
+        if (lk.src === "stock" && !D.market.tdKey) { hint.textContent = "Escribe el precio a mano, o conecta tu clave de bolsa en Mercado para que se ponga solo."; return; }
+        hint.textContent = "Buscando el precio de hoy…";
+        try {
+          const q = await fetchQuote(lk);
+          if (!form.isConnected) return;
+          form.elements.price.value = centsToInput(Math.round(q.price));
+          hint.innerHTML = `${ic("check", 'style="width:14px;height:14px;vertical-align:-2px;color:var(--in)"')} Precio en directo: ${fmtPrice(q.price)}${lk.src === "metal" ? " por gramo puro" : ""} · ${ago(q.at)}`;
+        } catch (e) { if (form.isConnected) hint.textContent = `${e.message} Escríbelo a mano.`; }
+      };
+      const renderLink = () => {
+        const box = $("#linkBox", s); if (!box) return;
+        if (link) {
+          box.innerHTML = `<div class="linked">${ic("check")}<span><b>${esc(link.name)}</b><small>${esc([link.symbol, link.mic].filter(Boolean).join(" · "))}${link.src === "stock" && !D.market.tdKey ? " · sin clave de bolsa, precio manual" : " · se actualiza solo"}</small></span><button type="button" class="btn btn-ghost" id="unlink">Cambiar</button></div>`;
+          $("#unlink", box).addEventListener("click", () => { link = null; renderLink(); $("#linkQ", s)?.focus(); });
+        } else {
+          box.innerHTML = `<label class="search"><span class="sr">Buscar valor</span>${ic("search")}<input class="in" id="linkQ" type="search" autocomplete="off" placeholder="${kind === "crypto" ? "Busca: Bitcoin, Ethereum…" : "Busca: Apple, MSCI World, Inditex…"}"></label><div id="linkRes"></div>`;
+          let t = null;
+          $("#linkQ", box).addEventListener("input", e => { clearTimeout(t); t = setTimeout(() => runSearch(e.target.value, $("#linkRes", box), pick, kind), 350); });
+        }
+      };
+      const pick = r => {
+        if ((kind === "crypto") !== (r.src === "crypto")) { toast(kind === "crypto" ? "Elige una criptomoneda." : "Elige una acción o un ETF."); return; }
+        link = { src: r.src, id: r.id, name: r.name, symbol: r.symbol, mic: r.mic, currency: r.currency };
+        if (!form.elements.name.value.trim()) form.elements.name.value = r.name;
+        if (form.elements.ticker && !form.elements.ticker.value.trim()) form.elements.ticker.value = r.symbol || "";
+        renderLink(); fillPrice(link);
+      };
+      if (linkable) { renderLink(); if (link && !edit) fillPrice(link); if (!link) setTimeout(() => matchMedia("(pointer:fine)").matches && $("#linkQ", s)?.focus(), 50); }
+      if (kind === "metal" && !edit) {
+        const metalLink = () => ({ src: "metal", id: Q.METAL_SYMBOL[form.elements.metal.value] });
+        form.elements.metal.addEventListener("change", () => fillPrice(metalLink()));
+        fillPrice(metalLink());
+      }
       const save = () => {
         const v = n => form.elements[n]?.value?.trim() ?? "";
         const errs = {};
         const name = v("name"); if (!name) errs.name = "Ponle un nombre para reconocerlo.";
         let apr = 0; if (kind === "bank" && v("apr")) { apr = Number(v("apr").replace(",", ".")); if (!(apr >= 0 && apr < 100)) errs.apr = "Escribe el interés como un número, por ejemplo 2,5."; }
         const meta = { name, ticker: v("ticker").toUpperCase(), entity: v("entity"), apr, metal: v("metal") || undefined, purity: form.elements.purity ? Number(form.elements.purity.value) : undefined };
+        if (linkable) meta.link = link || null;
         if (edit) {
           if (!setErrors(form, errs)) return;
           closeSheet();
-          commit(d => { const x = d.assets.find(y => y.id === a.id); Object.assign(x, Object.fromEntries(Object.entries(meta).filter(([, val]) => val !== undefined))); }, "Cambios guardados");
+          commit(d => {
+            const x = d.assets.find(y => y.id === a.id);
+            Object.assign(x, Object.fromEntries(Object.entries(meta).filter(([, val]) => val !== undefined)));
+            if (!x.link) delete x.link;
+            if (M.assetLinkKey(x) !== M.assetLinkKey(a)) delete x.live;
+            M.applyQuotes(d, {});
+          }, "Cambios guardados");
           openAsset(a.id);
+          refreshPrices({ force: true });
           return;
         }
         const date = v("date"); if (!U.isDate(date)) errs.date = "Elige una fecha válida.";
@@ -828,9 +883,12 @@ function openAssetForm(kind, existing) {
         const id = U.uid();
         closeSheet();
         commit(d => {
-          d.assets.push({ id, kind, ...Object.fromEntries(Object.entries(meta).filter(([, val]) => val !== undefined && val !== "")), ops: [], createdAt: new Date().toISOString() });
+          const clean = Object.fromEntries(Object.entries(meta).filter(([, val]) => val !== undefined && val !== "" && val !== null));
+          d.assets.push({ id, kind, ...clean, ops: [], createdAt: new Date().toISOString() });
           ops.forEach((op, i) => M.addAssetOp(d, id, op, i === 0 ? account : ""));
+          M.applyQuotes(d, {});
         }, `${name} añadido a tus ahorros`);
+        refreshPrices({ force: true });
       };
       $("#assetSave", s).addEventListener("click", save);
       form.addEventListener("submit", e => { e.preventDefault(); save(); });
@@ -850,13 +908,14 @@ function openAsset(id) {
   };
   const facts = [
     ["Valor actual", fmt(s.value)],
-    ...(k.liquid ? [] : [["Has puesto", fmt(s.invested)], ["Ganancia", `<span class="${s.gain >= 0 ? "pos" : "neg"}">${fmtSigned(s.gain)}${s.invested ? ` (${s.gain >= 0 ? "+" : "−"}${fmtPct(Math.abs(s.gainPct), 1)})` : ""}</span>`]]),
+    ...(k.liquid ? [] : [["Has puesto", fmt(s.invested)], ["Ganancia", `<span class="${s.gain >= 0 ? "pos" : "neg"}">${fmtSigned(s.gain)}${s.invested ? ` (${U.fmtPctSigned(s.gainPct)})` : ""}</span>`]]),
     ...(k.unit ? [[k.qty, `${fmtNum(s.units)}${a.kind === "metal" ? " g" : ""}`], [k.priceLabel, s.price ? fmt(Math.round(s.price)) : "—"]] : []),
     ...(a.kind === "bank" && a.apr ? [["Interés anual", `${String(a.apr).replace(".", ",")} % TAE`], ["Intereses en un año", `≈ ${fmt0(s.value * a.apr / 100)}`]] : []),
   ];
   openSheet({
     title: a.name,
     body: `<div class="form">
+      ${a.live ? `<button class="linked" data-quote="${esc(JSON.stringify(a.kind === "metal" ? { src: "metal", id: M.assetLinkKey(a).split(":")[1], name: a.metal || "Oro", symbol: M.assetLinkKey(a).split(":")[1] } : a.link))}">${ic("pulse")}<span><b>Precio en directo</b><small>${fmtPrice(a.live.price)}${a.kind === "metal" ? " por gramo puro" : ""} · ${ago(a.live.at)}</small></span>${ic("right")}</button>` : M.assetLinkKey(a) ? "" : (a.kind === "stock" || a.kind === "crypto") ? `<p class="hint">Precio manual. Usa «Editar» para vincularlo a su cotización en directo.</p>` : ""}
       <div class="facts">${facts.map(([l, v]) => `<div><small>${l}</small><b class="num">${v}</b></div>`).join("")}</div>
       <div class="actions-row">
         <button class="btn" data-op="buy">${ic("plus")}${k.unit ? "Comprar" : "Añadir"}</button>
@@ -870,6 +929,7 @@ function openAsset(id) {
     foot: `<button class="btn btn-ghost btn-danger" id="assetDel">${ic("trash")}Eliminar</button><button class="btn" id="assetEdit">Editar</button>`,
     mount: el => {
       $$("[data-op]", el).forEach(b => b.addEventListener("click", () => openAssetOp(a.id, b.dataset.op)));
+      $("[data-quote]", el)?.addEventListener("click", e => { e.stopPropagation(); openQuote(JSON.parse(e.currentTarget.dataset.quote)); });
       $$("[data-delop]", el).forEach(b => b.addEventListener("click", () => {
         commit(d => M.removeAssetOp(d, a.id, b.dataset.delop), "Operación borrada");
         openAsset(a.id);
@@ -969,6 +1029,10 @@ function viewPerfil() {
   <section class="section"><div class="sec-head"><h2>Seguridad</h2></div><div class="settings">
     <div class="set-row"><div><b>Contraseña</b><small>Cámbiala cuando quieras. La antigua dejará de funcionar.</small></div><div class="btns"><button class="btn" data-act="password">Cambiar contraseña</button></div></div>
     <div class="set-row"><div><b>Cerrar sesión</b><small>Vuelve a la pantalla de perfiles.</small></div><div class="btns"><button class="btn" data-act="lock">${ic("lock")}Cerrar sesión</button></div></div>
+  </div></section>
+  <section class="section"><div class="sec-head"><h2>Precios de bolsa</h2></div><div class="settings">
+    <div class="set-row"><div><b>Clave de Twelve Data</b><small>${D.market.tdKey ? `Conectada (termina en ${esc(D.market.tdKey.slice(-4))}). Se guarda cifrada en tu perfil.` : "Sin conectar. Los metales y las criptomonedas funcionan sin clave."}</small></div>
+      <div class="btns">${D.market.tdKey ? `<button class="btn btn-ghost btn-danger" data-act="tdRemove">Quitar clave</button>` : `<button class="btn" data-tab="mercado">Conectar en Mercado</button>`}</div></div>
   </div></section>
   <section class="section"><div class="sec-head"><h2>Copias y datos</h2></div><div class="settings">
     <div class="set-row"><div><b>Copia de seguridad cifrada</b><small>Guárdala en Archivos o iCloud. Sirve para recuperar tu perfil en otro dispositivo con tu contraseña.</small></div><div class="btns"><button class="btn btn-primary" data-act="backup">${ic("down")}Exportar copia</button></div></div>
@@ -1204,6 +1268,329 @@ function openImportCsv() {
       });
     },
   });
+}
+
+/* ======================================================================
+   Live prices engine
+   ====================================================================== */
+const live = { q: {}, top: [], status: {}, last: {}, busy: false, errors: {}, stockCursor: 0, prev: {} };
+const THROTTLE = { metal: 60e3, crypto: 30e3, top: 60e3, stock: 60e3, linkedIdle: 5 * 60e3 };
+const quoteOf = key => live.q[key] || D?.quotes?.[key] || null;
+
+function fmtPrice(c) {
+  if (!Number.isFinite(c)) return "—";
+  const v = c / 100;
+  const d = v >= 1 ? 2 : v >= 0.01 ? 4 : 6;
+  return v.toLocaleString("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: "always" });
+}
+const chg = c => c == null || !Number.isFinite(c) ? `<span class="chg flat">—</span>` : `<span class="chg ${c > 0.005 ? "up" : c < -0.005 ? "down" : "flat"}">${c > 0 ? "+" : c < 0 ? "−" : ""}${Math.abs(c).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %</span>`;
+function ago(iso) {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (!Number.isFinite(s)) return "";
+  if (s < 60) return "hace unos segundos";
+  if (s < 3600) return `hace ${Math.round(s / 60)} min`;
+  if (s < 86400) return `hace ${Math.round(s / 3600)} h`;
+  return `el ${new Date(iso).toLocaleDateString("es-ES", { day: "numeric", month: "short" })}`;
+}
+function spark(arr, w = 72, h = 26) {
+  if (!Array.isArray(arr) || arr.length < 2) return `<span class="spark"></span>`;
+  const min = Math.min(...arr), max = Math.max(...arr), r = max - min || 1;
+  const pts = arr.map((v, i) => `${(i / (arr.length - 1) * w).toFixed(1)},${(h - 2 - (v - min) / r * (h - 4)).toFixed(1)}`).join(" ");
+  const up = arr[arr.length - 1] >= arr[0];
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="var(${up ? "--in" : "--out"})" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+
+/** Everything that wants a price: linked savings and the watchlist. */
+function wantedLinks() {
+  const out = new Map();
+  for (const a of D.assets) {
+    const k = M.assetLinkKey(a); if (!k) continue;
+    if (a.kind === "metal") { const s = k.split(":")[1]; out.set(k, { src: "metal", id: s, name: Q.METAL_NAME[s], symbol: s }); }
+    else if (a.link) out.set(k, a.link);
+  }
+  for (const w of D.market.watch) out.set(Q.linkKey(w), w);
+  return [...out.values()];
+}
+
+async function refreshPrices({ force = false, market = view.tab === "mercado" } = {}) {
+  if (!session || live.busy || !navigator.onLine) return;
+  live.busy = true;
+  const now = Date.now(), due = (k, ms) => force || !live.last[k] || now - live.last[k] >= ms;
+  const links = wantedLinks();
+  const got = {};
+  const tasks = [];
+  const idle = market ? 1 : THROTTLE.linkedIdle / THROTTLE.crypto;
+  if ((market || links.some(l => l.src === "metal")) && due("metal", THROTTLE.metal * idle)) {
+    tasks.push(Q.metalQuotes().then(r => { for (const q of Object.values(r)) got[q.key] = q; live.status.metal = null; live.last.metal = Date.now(); }).catch(e => { live.status.metal = e.message; }));
+  }
+  const cIds = [...new Set(links.filter(l => l.src === "crypto").map(l => l.id))];
+  if (cIds.length && due("crypto", THROTTLE.crypto * idle)) {
+    tasks.push(Q.cryptoQuotes(cIds).then(r => { for (const q of Object.values(r)) got[q.key] = q; live.status.crypto = null; live.last.crypto = Date.now(); }).catch(e => { live.status.crypto = e.message; }));
+  }
+  if (market && due("top", THROTTLE.top)) {
+    tasks.push(Q.cryptoTop(10).then(list => { live.top = list; for (const q of list) got[q.key] = q; live.status.top = null; live.last.top = Date.now(); }).catch(e => { live.status.top = e.message; }));
+  }
+  const sIds = links.filter(l => l.src === "stock").map(l => l.id);
+  if (sIds.length && D.market.tdKey && due("stock", THROTTLE.stock * idle)) {
+    // Free plan: 8 requests a minute. Ask for at most 7 per round, rotating through the list.
+    const n = Math.min(7, sIds.length), batch = [];
+    for (let i = 0; i < n; i++) batch.push(sIds[(live.stockCursor + i) % sIds.length]);
+    live.stockCursor = (live.stockCursor + n) % sIds.length;
+    live.last.stock = Date.now();
+    tasks.push(Promise.all(batch.map(id => Q.stockQuote(id, D.market.tdKey).then(q => { got[q.key] = q; delete live.errors["stock:" + id]; }).catch(e => {
+      live.errors["stock:" + id] = e.message;
+      if (e.code === "auth") live.status.stock = e.message;
+      if (e.code === "rate") live.last.stock = Date.now() + 60e3;
+    }))).then(() => { if (!Object.keys(live.errors).some(k => k.startsWith("stock:") && /clave/.test(live.errors[k]))) live.status.stock = null; }));
+  }
+  try { await Promise.all(tasks); } finally { live.busy = false; }
+  if (!session || !Object.keys(got).length) { if (view.tab === "mercado") renderMarketBody(); return; }
+  for (const q of Object.values(got)) { live.prev[q.key] = quoteOf(q.key)?.price; live.q[q.key] = q; }
+  const changed = M.applyQuotes(D, got);
+  session.save();
+  if (view.tab === "mercado") renderMarketBody(Object.keys(got));
+  else if ((view.tab === "ahorros" || view.tab === "inicio") && changed && !viewHasFocus()) renderView();
+}
+const viewHasFocus = () => { const a = document.activeElement; return a && $("#view")?.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName); };
+
+let priceTimer = null;
+function startPriceLoop() {
+  clearInterval(priceTimer);
+  priceTimer = setInterval(() => { if (session && !document.hidden) refreshPrices(); if (view.tab === "mercado") updateMarketClock(); }, 15000);
+  refreshPrices();
+}
+addEventListener("online", () => session && refreshPrices({ force: true }));
+
+/* ======================================================================
+   View: Mercado
+   ====================================================================== */
+function viewMercado() {
+  setTimeout(() => refreshPrices(), 0);
+  return `<section class="section" style="padding-bottom:8px;border-bottom:0">
+    <div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Mercado</h2><span class="live-state" id="liveState"></span></div>
+    <label class="search"><span class="sr">Buscar en el mercado</span>${ic("search")}<input class="in" id="mktq" type="search" placeholder="Busca oro, Bitcoin, Apple, un ETF…" autocomplete="off" value="${esc(live.query || "")}"></label>
+    <div id="mktResults"></div>
+  </section>
+  <div id="mktBody">${marketBody()}</div>`;
+}
+
+function quoteRow(link, { sub = "", showSpark = true } = {}) {
+  const key = Q.linkKey(link), q = quoteOf(key), err = live.errors[key];
+  const flash = live.flash?.has(key) && live.prev[key] != null && q ? (q.price > live.prev[key] ? " flash-up" : q.price < live.prev[key] ? " flash-down" : "") : "";
+  const letter = esc((link.symbol || link.name || "?").replace(/^X(?=A[UG]|P[TD])/, "").slice(0, link.src === "metal" ? 2 : 1));
+  return `<button class="qrow${flash}" data-quote="${esc(JSON.stringify(link))}">
+    <span class="qic ${link.src}">${link.src === "metal" ? ic("bar") : letter}</span>
+    <span class="qmain"><b>${esc(link.name || link.symbol)}</b><small>${sub || esc([link.symbol, link.src === "stock" ? (link.mic || "") : ""].filter(Boolean).join(" · "))}</small></span>
+    ${showSpark ? spark(q?.spark) : ""}
+    <span class="qval num"><b>${q ? fmtPrice(q.price) : link.src === "stock" && !D.market.tdKey ? "—" : err ? "—" : "…"}</b>${q ? chg(q.change) : err ? `<small class="faint">${esc(err.length > 28 ? "Sin precio" : err)}</small>` : ""}</span>
+  </button>`;
+}
+
+function marketBody() {
+  const held = D.assets.filter(a => M.assetLinkKey(a));
+  const watch = D.market.watch;
+  const metals = Object.keys(Q.METAL_NAME).map(s => ({ src: "metal", id: s, name: Q.METAL_NAME[s], symbol: s }));
+  const holdingSub = a => { const s = M.assetState(a); return `${fmtNum(s.units, 6)} ${a.kind === "metal" ? "g" : esc(a.ticker || "")} · tienes ${fmt0(s.value)}`; };
+  const linkOf = a => a.kind === "metal" ? metals.find(m => `metal:${m.id}` === M.assetLinkKey(a)) : a.link;
+  let html = "";
+  if (held.length) html += `<section class="section"><div class="sec-head"><h2>Tu cartera</h2><span class="sub">Se actualiza sola mientras miras</span></div>
+    <div class="qlist">${held.map(a => quoteRow({ ...linkOf(a), name: a.name }, { sub: holdingSub(a), showSpark: false })).join("")}</div></section>`;
+  if (watch.length) html += `<section class="section"><div class="sec-head"><h2>Siguiendo</h2></div><div class="qlist">${watch.map(w => quoteRow(w)).join("")}</div></section>`;
+  html += `<section class="section"><div class="sec-head"><h2>Metales preciosos</h2><span class="sub">Precio por gramo puro</span></div>
+    <div class="qlist">${metals.map(m => { const q = quoteOf(Q.linkKey(m)); return quoteRow(m, { sub: q?.perOz ? `${fmt0(q.perOz)} la onza` : "Oro, plata, platino y paladio", showSpark: false }); }).join("")}</div>
+    ${live.status.metal ? `<p class="hint">${esc(live.status.metal)}</p>` : ""}</section>`;
+  html += `<section class="section"><div class="sec-head"><h2>Criptomonedas</h2><span class="sub">Las 10 mayores · 7 días</span></div>
+    ${live.top.length ? `<div class="qlist">${live.top.map(c => quoteRow({ src: "crypto", id: c.id, name: c.name, symbol: c.symbol }, { sub: `${c.symbol} · nº ${c.rank}` })).join("")}</div>` : `<p class="muted">${live.status.top ? esc(live.status.top) : "Cargando precios…"}</p>`}</section>`;
+  html += `<section class="section"><div class="sec-head"><h2>Bolsa: acciones y ETF</h2></div>${D.market.tdKey
+    ? `<p class="muted">Busca arriba una acción o un ETF y pulsa «Seguir» para tenerlo aquí. ${live.status.stock ? `<b class="neg">${esc(live.status.stock)}</b>` : ""}</p><p class="hint" style="margin-top:8px">Plan gratuito: hasta 8 consultas por minuto. Si sigues muchos valores, se actualizan por turnos.</p>`
+    : stockConnectCard()}</section>`;
+  html += `<section class="section"><p class="disclaimer">Precios de Gold API, CoinGecko y Twelve Data, convertidos a euros con el cambio del BCE. Pueden llevar unos minutos de retraso. Para pedir un precio solo se envía el símbolo; tus cantidades nunca salen del móvil.</p></section>`;
+  return html;
+}
+
+function stockConnectCard() {
+  return `<div class="connect">
+    <b>Conecta los precios de bolsa (gratis)</b>
+    <ol><li>Entra en <b>twelvedata.com</b> y crea una cuenta gratuita.</li><li>En tu panel, copia tu <b>API key</b>.</li><li>Pégala aquí. Se guarda cifrada en tu perfil.</li></ol>
+    <form id="tdForm" class="form" novalidate style="gap:10px"><label class="field"><span class="sr">Clave de Twelve Data</span><input class="in" name="key" autocomplete="off" spellcheck="false" placeholder="Pega aquí tu API key"><small class="err" data-err="key"></small></label>
+    <button class="btn btn-primary" type="submit">Conectar</button></form>
+    <p class="hint">Sin clave puedes buscar acciones y ETF y apuntarlos a mano; con ella, su precio se actualiza solo.</p></div>`;
+}
+
+function renderMarketBody(changedKeys) {
+  const el = $("#mktBody"); if (!el || view.tab !== "mercado") return;
+  if (el.contains(document.activeElement) && /INPUT/.test(document.activeElement.tagName)) return; // don't wipe the key field while typing
+  live.flash = new Set(changedKeys || []);
+  el.innerHTML = marketBody();
+  live.flash = null;
+  updateMarketClock();
+}
+function updateMarketClock() {
+  const el = $("#liveState"); if (!el) return;
+  const times = Object.values(live.last).filter(Boolean);
+  if (!navigator.onLine) { el.innerHTML = `<i class="off"></i>Sin conexión · últimos precios guardados`; return; }
+  el.innerHTML = times.length ? `<i></i>En directo · ${ago(new Date(Math.min(Date.now(), Math.max(...times))).toISOString())}` : `<i class="wait"></i>Conectando…`;
+}
+
+let searchTimer = null, searchSeq = 0;
+document.addEventListener("input", e => {
+  if (!session || e.target.id !== "mktq") return;
+  live.query = e.target.value;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => runSearch(e.target.value, $("#mktResults")), 350);
+});
+async function runSearch(q, box, onPick, only = "") {
+  q = q.trim();
+  const my = ++searchSeq;
+  if (!box) return;
+  if (q.length < 2) { box.innerHTML = ""; return; }
+  const ql = q.toLowerCase();
+  const metals = Object.entries(Q.METAL_NAME).filter(([s, n]) => n.toLowerCase().startsWith(ql) || s.toLowerCase() === ql || (ql === "gold" && s === "XAU") || (ql === "silver" && s === "XAG"))
+    .map(([s, n]) => ({ src: "metal", id: s, name: n, symbol: s, sub: "Metal precioso" }));
+  box.innerHTML = `<p class="hint" style="padding:10px 0">Buscando…</p>`;
+  const [cr, st] = await Promise.all([only === "stock" ? [] : Q.searchCrypto(q).catch(() => null), only === "crypto" ? [] : Q.searchStocks(q).catch(() => null)]);
+  if (my !== searchSeq) return;
+  const groups = [["Metales", only ? [] : metals], ["Acciones y ETF", st || []], ["Criptomonedas", cr || []]].filter(([, l]) => l.length);
+  if (!groups.length) { box.innerHTML = `<p class="hint" style="padding:10px 0">${cr === null && st === null ? "No hay conexión para buscar." : `No he encontrado nada con «${esc(q)}».`}</p>`; return; }
+  box.innerHTML = `<div class="results">${groups.map(([t, l]) => `<div class="res-group">${t}</div>${l.map(r => `<button class="res" data-pick="${esc(JSON.stringify(r))}"><span class="qic ${r.src}">${r.src === "metal" ? ic("bar") : esc((r.symbol || r.name).slice(0, 1))}</span><span class="qmain"><b>${esc(r.name)}</b><small>${esc(r.symbol)} · ${esc(r.sub)}</small></span>${ic("right")}</button>`).join("")}`).join("")}</div>`;
+  $$("[data-pick]", box).forEach(b => b.addEventListener("click", () => {
+    const r = JSON.parse(b.dataset.pick); delete r.sub;
+    if (onPick) onPick(r); else openQuote(r);
+  }));
+}
+
+document.addEventListener("click", e => {
+  if (!session) return;
+  const b = e.target.closest("[data-quote]"); if (!b) return;
+  openQuote(JSON.parse(b.dataset.quote));
+});
+document.addEventListener("submit", async e => {
+  if (!session || e.target.id !== "tdForm") return;
+  e.preventDefault();
+  const form = e.target, key = form.elements.key.value.trim(), btn = $("button[type=submit]", form);
+  if (!/^[A-Za-z0-9]{16,64}$/.test(key)) return setErrors(form, { key: "Esa clave no parece correcta: copia el texto completo de tu API key." });
+  busy(btn, true, "Comprobando…");
+  try { await Q.testStockKey(key); }
+  catch (err) { busy(btn, false, "Conectar"); return setErrors(form, { key: err.code === "offline" ? err.message : "Esa clave no funciona. Cópiala de nuevo desde tu panel de Twelve Data." }); }
+  D.market.tdKey = key; session.save(); live.status.stock = null;
+  form.elements.key.blur();
+  renderView(); toast("Bolsa conectada. Ya puedes seguir acciones y ETF.");
+  refreshPrices({ force: true });
+});
+
+/** Fetches one fresh quote now and caches it. */
+async function fetchQuote(link) {
+  let q;
+  if (link.src === "metal") q = (await Q.metalQuotes())[link.id];
+  else if (link.src === "crypto") q = (await Q.cryptoQuotes([link.id]))[link.id];
+  else q = await Q.stockQuote(link.id, D.market.tdKey);
+  if (!q) throw new Q.QuoteError("bad", "No hay precio para este valor ahora mismo.");
+  live.q[q.key] = { ...(live.q[q.key] || {}), ...q };
+  if (session) { M.applyQuotes(D, { [q.key]: q }); session.save(); }
+  return q;
+}
+
+/* ---------- quote detail ---------- */
+function openQuote(link) {
+  const key = Q.linkKey(link);
+  const held = D.assets.filter(a => M.assetLinkKey(a) === key);
+  const watching = () => D.market.watch.some(w => Q.linkKey(w) === key);
+  const kind = link.src === "metal" ? "metal" : link.src === "crypto" ? "crypto" : "stock";
+  let range = "1D";
+  const statsHtml = q => {
+    if (!q) return "";
+    const rows = [];
+    if (link.src === "metal") { if (q.perOz) rows.push(["Precio por onza", fmt(q.perOz)]); rows.push(["Precio por gramo", fmtPrice(q.price)]); rows.push(["Precio por kilo", fmt0(q.price * 1000)]); }
+    if (link.src === "crypto") { if (q.high) rows.push(["Máximo 24 h", fmtPrice(q.high)]); if (q.low) rows.push(["Mínimo 24 h", fmtPrice(q.low)]); if (q.cap) rows.push(["Capitalización", (q.cap).toLocaleString("es-ES", { notation: "compact", maximumFractionDigits: 2 }) + " €"]); if (q.rank) rows.push(["Ranking", `nº ${q.rank}`]); }
+    if (link.src === "stock") { if (Number.isFinite(q.open)) rows.push(["Apertura", fmtPrice(q.open)]); if (Number.isFinite(q.high)) rows.push(["Máximo del día", fmtPrice(q.high)]); if (Number.isFinite(q.low)) rows.push(["Mínimo del día", fmtPrice(q.low)]); if (Number.isFinite(q.prev)) rows.push(["Cierre anterior", fmtPrice(q.prev)]); if (q.w52) rows.push(["Rango 52 semanas", `${fmtPrice(q.w52.low)} – ${fmtPrice(q.w52.high)}`]); rows.push(["Mercado", q.open_now ? "Abierto" : "Cerrado"]); if (q.currency && q.currency !== "EUR") rows.push(["Cotiza en", `${esc(q.currency)} (convertido a €)`]); }
+    return `<div class="facts">${rows.map(([l, v]) => `<div><small>${l}</small><b class="num">${v}</b></div>`).join("")}</div>`;
+  };
+  const posHtml = () => !held.length ? "" : `<div class="pos-box">${held.map(a => { const s = M.assetState(a); return `<div class="line"><span>${esc(a.name)} · ${fmtNum(s.units, 6)}${a.kind === "metal" ? " g" : ""}</span><b class="num">${fmt(s.value)} <span class="${s.gain >= 0 ? "pos" : "neg"}">${fmtSigned(s.gain, 0)}</span></b></div>`; }).join("")}</div>`;
+  const head = q => `<div class="qhead"><div class="big num" id="qPrice">${q ? fmtPrice(q.price) : "—"}</div><div class="qmeta">${q ? chg(q.change) : ""}<span class="faint">${q ? (link.src === "metal" ? "por gramo · " : "") + (q.at ? `actualizado ${ago(q.at)}` : "") : ""}</span></div></div>`;
+  const body = () => {
+    const q = quoteOf(key);
+    const noKey = link.src === "stock" && !D.market.tdKey;
+    return `<div class="form">
+      <p class="muted" style="margin-top:-6px">${esc([link.symbol, link.src === "stock" ? link.mic : "", link.src === "metal" ? "Metal precioso" : link.src === "crypto" ? "Criptomoneda" : ""].filter(Boolean).join(" · "))}</p>
+      <div id="qHead">${head(q)}</div>
+      ${noKey ? stockConnectCard() : `<div class="seg" role="tablist" aria-label="Periodo">${Object.keys(Q.RANGES).map(r => `<label><input type="radio" name="range" value="${r}"${r === range ? " checked" : ""}><span>${r}</span></label>`).join("")}</div>
+      <div class="qchart" id="qChart"><p class="hint">Cargando gráfico…</p></div>
+      ${link.src === "metal" && link.id !== "XAU" && link.id !== "XAG" ? `` : link.src === "metal" ? `<p class="hint">Evolución según ${link.id === "XAU" ? "PAXG" : "KAG"}, un token respaldado por una onza de ${link.id === "XAU" ? "oro" : "plata"} física.</p>` : ""}`}
+      <div id="qStats">${statsHtml(q)}</div>
+      ${posHtml()}
+      <div class="actions-row">
+        <button class="btn" id="qWatch">${watching() ? `${ic("check")}Siguiendo` : `${ic("plus")}Seguir`}</button>
+        ${held.length ? `<button class="btn btn-primary" id="qBuy">${ic("plus")}Registrar compra</button>` : `<button class="btn btn-primary" id="qAdd">${ic("vault")}Añadir a mis ahorros</button>`}
+      </div>
+    </div>`;
+  };
+  const drawQ = async () => {
+    const box = $("#qChart"); if (!box) return;
+    if (link.src === "metal" && !(link.id === "XAU" || link.id === "XAG")) { box.innerHTML = `<p class="hint">No hay gráfico gratuito para este metal; el precio sí es en directo.</p>`; return; }
+    box.innerHTML = `<p class="hint">Cargando gráfico…</p>`;
+    const r = range;
+    try {
+      const pts = await Q.chart(link, r, D.market.tdKey);
+      if (r !== range || !$("#qChart")) return;
+      lineChart($("#qChart"), pts, r);
+    } catch (e) { if ($("#qChart")) $("#qChart").innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
+  };
+  openSheet({
+    title: link.name || link.symbol, body: body(),
+    mount: el => {
+      el.addEventListener("change", e => { if (e.target.name === "range") { range = e.target.value; drawQ(); } });
+      const wire = () => {
+        $("#qWatch", el)?.addEventListener("click", () => {
+          const on = watching();
+          D.market.watch = on ? D.market.watch.filter(w => Q.linkKey(w) !== key) : [...D.market.watch, { src: link.src, id: link.id, name: link.name, symbol: link.symbol, mic: link.mic, currency: link.currency }];
+          session.save();
+          $("#qWatch", el).innerHTML = !on ? `${ic("check")}Siguiendo` : `${ic("plus")}Seguir`;
+          toast(on ? `Has dejado de seguir ${link.name}` : `Siguiendo ${link.name}`);
+          if (view.tab === "mercado") renderMarketBody();
+        });
+        $("#qAdd", el)?.addEventListener("click", () => openAssetForm(kind, null, { link, name: link.name, symbol: link.symbol, metal: link.src === "metal" ? Q.METAL_NAME[link.id] : undefined }));
+        $("#qBuy", el)?.addEventListener("click", () => openAssetOp(held[0].id, "buy"));
+      };
+      wire();
+      if (!(link.src === "stock" && !D.market.tdKey)) {
+        drawQ();
+        fetchQuote(link).then(q => {
+          if (!sheet.classList.contains("on") || $("#sheetTitle").textContent !== (link.name || link.symbol)) return;
+          $("#qHead") && ($("#qHead").innerHTML = head(quoteOf(key) || q));
+          $("#qStats") && ($("#qStats").innerHTML = statsHtml(quoteOf(key) || q));
+        }).catch(e => { $("#qHead") && $("#qHead").insertAdjacentHTML("beforeend", `<p class="hint">${esc(e.message)}</p>`); });
+      }
+    },
+  });
+}
+
+function lineChart(box, pts, range) {
+  if (!pts || pts.length < 2) { box.innerHTML = `<p class="hint">No hay datos suficientes para este periodo.</p>`; return; }
+  const W = box.clientWidth || 320, H = 190, padT = 10, padB = 22;
+  const ps = pts.map(p => p.p), min = Math.min(...ps), max = Math.max(...ps), r = max - min || max * 0.01 || 1;
+  const x = i => (i / (pts.length - 1)) * W, y = v => padT + (1 - (v - min) / r) * (H - padT - padB);
+  const up = ps[ps.length - 1] >= ps[0], col = up ? "var(--in)" : "var(--out)";
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.p).toFixed(1)}`).join("");
+  const diff = ps[ps.length - 1] - ps[0], pct = ps[0] ? diff / ps[0] * 100 : 0;
+  const fmtT = t => { const d = new Date(t); return range === "1D" ? d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : d.toLocaleDateString("es-ES", { day: "numeric", month: "short", ...(range === "1A" ? { year: "2-digit" } : {}) }); };
+  box.innerHTML = `<div class="qrange num">${range === "1D" ? "Hoy" : range === "1S" ? "Esta semana" : range === "1M" ? "Este mes" : "Este año"}: ${chg(pct)} <span class="faint">${fmtSigned(Math.round(diff), 2)}</span></div>
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Evolución del precio">
+      <defs><linearGradient id="qg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".18"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+      <path d="${line}L${W},${H - padB}L0,${H - padB}Z" fill="url(#qg)"/>
+      <path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <text x="0" y="${H - 6}" class="axis-t">${fmtT(pts[0].t)}</text><text x="${W}" y="${H - 6}" text-anchor="end" class="axis-t">${fmtT(pts[pts.length - 1].t)}</text>
+      <g id="qx" style="display:none"><line y1="${padT}" y2="${H - padB}" stroke="var(--ink-3)" stroke-dasharray="3 3"/><circle r="4.5" fill="${col}" stroke="var(--surface)" stroke-width="2"/></g>
+    </svg><div class="qtip" id="qtip"></div>`;
+  const svg = $("svg", box), g = $("#qx", box), tip = $("#qtip", box);
+  const at = ev => {
+    const rect = svg.getBoundingClientRect(); const rx = (ev.clientX - rect.left) / rect.width * W;
+    const i = Math.max(0, Math.min(pts.length - 1, Math.round(rx / W * (pts.length - 1))));
+    g.style.display = ""; $("line", g).setAttribute("x1", x(i)); $("line", g).setAttribute("x2", x(i));
+    $("circle", g).setAttribute("cx", x(i)); $("circle", g).setAttribute("cy", y(pts[i].p));
+    tip.textContent = `${fmtPrice(pts[i].p)} · ${fmtT(pts[i].t)}`; tip.classList.add("on");
+  };
+  svg.addEventListener("pointermove", at); svg.addEventListener("pointerdown", at);
+  svg.addEventListener("pointerleave", () => { g.style.display = "none"; tip.classList.remove("on"); });
 }
 
 /* ======================================================================
