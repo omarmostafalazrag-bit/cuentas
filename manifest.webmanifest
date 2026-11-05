@@ -1,7 +1,7 @@
 {
   "name": "Cuentas claras",
   "short_name": "Cuentas",
-  "description": "Tus ingresos y gastos, presupuestos por categoría y evolución mensual.",
+  "description": "Tus cuentas, tus ahorros y un asesor que analiza tus finanzas. Privado y cifrado en tu dispositivo.",
   "lang": "es",
   "start_url": "./",
   "scope": "./",
