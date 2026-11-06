@@ -1,11 +1,11 @@
 // Cuentas claras — UI layer. Renders from the in-memory data of the open profile and
 // writes every change through the encrypted Session.
 
-import * as U from "./util.js?v=6";
-import * as V from "./vault.js?v=6";
-import * as M from "./model.js?v=6";
-import { analyze, scoreWord } from "./advisor.js?v=6";
-import * as Q from "./quotes.js?v=6";
+import * as U from "./util.js?v=7";
+import * as V from "./vault.js?v=7";
+import * as M from "./model.js?v=7";
+import { analyze, scoreWord } from "./advisor.js?v=7";
+import * as Q from "./quotes.js?v=7";
 
 const { esc, fmt, fmt0, fmtBal, fmtSigned, fmtNum, fmtPct, sum } = U;
 const $ = (s, el = document) => el.querySelector(s);
@@ -29,7 +29,7 @@ let D = null;
 let hiddenAt = 0;
 let freshId = null;
 const today = () => U.todayStr();
-const view = { tab: "inicio", month: U.ym(U.todayStr()), q: "", type: "all", acct: "", cat: "", movTab: "list", savTab: "assets" };
+const view = { tab: "inicio", month: U.ym(U.todayStr()), q: "", type: "all", acct: "", cat: "", movTab: "list", savTab: "assets", hide: true };
 
 /* ======================================================================
    Toasts
@@ -279,6 +279,7 @@ function startSession(s) {
   s.onError = e => toast(e.message || "No se pudo guardar.");
   view.tab = TABS.some(t => "#" + t.id === location.hash) ? location.hash.slice(1) : "inicio";
   view.month = U.ym(today());
+  view.hide = true;
   renderShell();
   if (!D.settings.onboarded) openOnboarding();
   fixedCheckedOn = ""; runFixed();
@@ -373,6 +374,7 @@ document.addEventListener("click", e => {
     case "prevMonth": view.month = U.addMonths(view.month, -1); renderView(); break;
     case "nextMonth": if (view.month < U.ym(today())) { view.month = U.addMonths(view.month, 1); renderView(); } break;
     case "goMonth": view.month = id; renderView(); break;
+    case "hide": view.hide = !view.hide; renderView(); break;
     case "movTab": view.movTab = a.dataset.v; if (a.dataset.go) setTab("movimientos"); else renderView(); break;
     case "savTab": view.savTab = a.dataset.v; if (a.dataset.go) setTab("ahorros"); else renderView(); break;
     case "newDebt": openDebtForm(null, a.dataset.dir || "owe"); break;
@@ -430,6 +432,14 @@ function deltaText(cur, prev, goodUp) {
   return `<b class="${good ? "pos" : "neg"}">${up ? "+" : "−"}${Math.abs(p)} %</b><span>vs. ${isCurrentMonth() ? `1–${Number(today().slice(8))} ${pm}` : U.MONTHS[Number(U.addMonths(view.month, -1).slice(5)) - 1]}</span>`;
 }
 
+/** Masks an amount while the person keeps their money hidden. */
+function hid(html, size) {
+  return view.hide ? `<span class="masked${size ? " " + size : ""}" aria-label="Importe oculto">••••</span>` : html;
+}
+function eyeBtn() {
+  return `<button class="eye" data-act="hide" aria-pressed="${!view.hide}" aria-label="${view.hide ? "Mostrar importes" : "Ocultar importes"}">${ic(view.hide ? "eye" : "eyeoff")}</button>`;
+}
+
 function viewInicio() {
   const bal = M.accountBalances(D), avail = sum(Object.values(bal));
   const sav = M.savingsSummary(D);
@@ -448,13 +458,13 @@ function viewInicio() {
   return `
   <section class="section">
     <div class="hero">
-      <div><div class="kicker-num">${debts.owe || debts.owed ? "Patrimonio neto" : "Patrimonio total"}</div><div class="big num${worth < 0 ? " neg" : ""}">${fmtBal(worth)}</div>
-        <p class="muted" style="margin-top:10px">Dinero disponible ${fmtBal(avail)} · Ahorros ${fmtBal(sav.total)}${debts.owe ? ` · Deudas −${fmt0(debts.owe)}` : ""}${debts.owed ? ` · Te deben ${fmt0(debts.owed)}` : ""}</p></div>
+      <div><div class="kicker-num">${debts.owe || debts.owed ? "Patrimonio neto" : "Patrimonio total"}${eyeBtn()}</div><div class="big num${worth < 0 && !view.hide ? " neg" : ""}">${hid(fmtBal(worth), "big")}</div>
+        <p class="muted" style="margin-top:10px">${view.hide ? "Toca el ojo para ver cuánto tienes" : `Dinero disponible ${fmtBal(avail)} · Ahorros ${fmtBal(sav.total)}${debts.owe ? ` · Deudas −${fmt0(debts.owe)}` : ""}${debts.owed ? ` · Te deben ${fmt0(debts.owed)}` : ""}`}</p></div>
       <div class="breakdown">
-        ${D.accounts.map(a => `<button class="line" data-act="newTx" data-account="${esc(a.id)}"><span>${ic(ACCT_ICON[a.kind] || "card")}${esc(a.name)}</span><b class="num${bal[a.id] < 0 ? " neg" : ""}">${fmtBal(bal[a.id])}</b></button>`).join("")}
-        <button class="line" data-act="savTab" data-v="assets" data-go="1"><span>${ic("vault")}Ahorros e inversiones</span><b class="num">${fmtBal(sav.total)}</b></button>
-        ${debts.owe ? `<button class="line" data-act="savTab" data-v="debts" data-go="1"><span>${ic("file")}Lo que debes</span><b class="num neg">−${fmt0(debts.owe)}</b></button>` : ""}
-        ${debts.owed ? `<button class="line" data-act="savTab" data-v="debts" data-go="1"><span>${ic("user")}Lo que te deben</span><b class="num pos">+${fmt0(debts.owed)}</b></button>` : ""}
+        ${D.accounts.map(a => `<button class="line" data-act="newTx" data-account="${esc(a.id)}"><span>${ic(ACCT_ICON[a.kind] || "card")}${esc(a.name)}</span><b class="num${bal[a.id] < 0 && !view.hide ? " neg" : ""}">${hid(fmtBal(bal[a.id]))}</b></button>`).join("")}
+        <button class="line" data-act="savTab" data-v="assets" data-go="1"><span>${ic("vault")}Ahorros e inversiones</span><b class="num">${hid(fmtBal(sav.total))}</b></button>
+        ${debts.owe ? `<button class="line" data-act="savTab" data-v="debts" data-go="1"><span>${ic("file")}Lo que debes</span><b class="num${view.hide ? "" : " neg"}">${hid(`−${fmt0(debts.owe)}`)}</b></button>` : ""}
+        ${debts.owed ? `<button class="line" data-act="savTab" data-v="debts" data-go="1"><span>${ic("user")}Lo que te deben</span><b class="num${view.hide ? "" : " pos"}">${hid(`+${fmt0(debts.owed)}`)}</b></button>` : ""}
       </div>
     </div>
   </section>
@@ -464,7 +474,7 @@ function viewInicio() {
     <div class="accounts">${D.accounts.map(a => { const m = byAcct(a.id); return `
       <button class="acct" style="text-align:left" data-act="newTx" data-account="${esc(a.id)}">
         <span class="acct-top">${ic(ACCT_ICON[a.kind] || "card")}${esc(a.name)}</span>
-        <span class="mid num${bal[a.id] < 0 ? " neg" : ""}">${fmtBal(bal[a.id], 2)}</span>
+        <span class="mid num${bal[a.id] < 0 && !view.hide ? " neg" : ""}">${hid(fmtBal(bal[a.id], 2))}</span>
         <small class="num">${U.cap(U.MONTHS[Number(view.month.slice(5)) - 1])}: −${fmt0(m.o)} gastado · +${fmt0(m.i)} ingresado</small>
       </button>`; }).join("")}</div>
     <div class="quick">
@@ -1009,7 +1019,26 @@ function openAssetOp(id, type) {
    ====================================================================== */
 const LVL = { critical: ["Importante", "alert"], warn: ["Atención", "alert"], info: ["Consejo", "info"], good: ["Bien", "check"] };
 function insightCard(x) {
-  return `<article class="insight ${x.level}"><span class="badge">${ic(LVL[x.level][1])}</span><span class="lvl">${LVL[x.level][0]}</span><h3>${esc(x.title)}</h3><div><p>${esc(x.body)}</p>${x.action ? `<p class="do">${ic("arrow")}<span>${esc(x.action)}</span></p>` : ""}</div></article>`;
+  return `<article class="insight ${x.level}"><span class="badge">${ic(LVL[x.level][1])}</span><span class="lvl">${LVL[x.level][0]}</span><h3>${esc(x.title)}</h3><div><p>${esc(x.body)}</p>${x.action ? `<p class="do">${ic("arrow")}<span>${esc(x.action)}</span></p>` : ""}${x.src ? `<p class="src">${esc(x.src)}</p>` : ""}</div></article>`;
+}
+const EXPERTS = [
+  ["Warren Buffett", "Inversor, Berkshire Hathaway", "Gasta lo que queda después de ahorrar, no ahorres lo que queda después de gastar. Evita las deudas caras y piensa a muy largo plazo."],
+  ["John Bogle", "Fundador de Vanguard", "Para la mayoría, lo más eficaz es invertir de forma muy diversificada, con comisiones bajas, y mantener el rumbo."],
+  ["Elizabeth Warren", "Regla 50/30/20", "50 % para necesidades, 30 % para caprichos y 20 % para ahorro y deudas."],
+  ["Dave Ramsey", "Bola de nieve de deudas", "Un colchón primero, luego deudas de la más pequeña a la más grande para ganar impulso."],
+  ["Suze Orman", "Fondo de emergencia", "Entre 3 y 6 meses de gastos guardados, más si tus ingresos son irregulares."],
+  ["George S. Clason", "El hombre más rico de Babilonia", "Págate primero: guarda al menos una décima parte de todo lo que ganes."],
+  ["Morgan Housel", "La psicología del dinero", "La riqueza es lo que no ves: el dinero que no gastas. Cuidado con que el gasto suba al ritmo de tus ingresos."],
+  ["Ramit Sethi", "Gasto consciente", "Automatiza el ahorro, recorta sin piedad lo que no valoras y gasta sin culpa en lo que sí."],
+  ["Benjamin Graham", "El inversor inteligente", "Invierte solo lo que puedas mantener en las caídas y no dependas de un único activo."],
+];
+function splitBar(x) {
+  const seg = [["Necesidades", x.needs, "needs", 50], ["Caprichos", x.wants + x.give, "wants", 30], ["Ahorro", Math.max(0, x.save), "save", 20]];
+  const tot = sum(seg.map(s => s[1])) || 1;
+  return `<section class="section"><div class="sec-head"><h2>Tu reparto 50/30/20</h2><span class="sub">De media al mes, sobre ${fmt0(x.income)} de ingresos</span></div>
+    <div class="split" role="img" aria-label="${seg.map(s => `${s[0]} ${fmtPct(s[1] / x.income)}`).join(", ")}">${seg.map(s => s[1] > 0 ? `<i class="${s[2]}" style="flex:${s[1] / tot}"></i>` : "").join("")}</div>
+    <div class="split-legend">${seg.map(s => `<div><span class="dot ${s[2]}"></span><b>${s[0]}</b><span class="num">${fmtPct(Math.max(0, s[1]) / x.income)}</span><small>objetivo ${s[3]} %</small></div>`).join("")}</div>
+    ${x.give ? `<p class="hint">Las donaciones (${fmt0(x.give)}) cuentan dentro de caprichos.</p>` : ""}</section>`;
 }
 function viewAsesor() {
   const r = analyze(D, today());
@@ -1020,8 +1049,8 @@ function viewAsesor() {
     ["Colchón para imprevistos", m.monthsCovered === null ? "—" : `${m.monthsCovered.toLocaleString("es-ES", { maximumFractionDigits: 1 })} meses`, "lo recomendable: 3 a 6"],
     ["Gasto medio al mes", m.avgOut ? fmt0(m.avgOut) : "—", "sin traspasos ni inversiones"],
     ["Ingreso medio al mes", m.avgIn ? fmt0(m.avgIn) : "—", ""],
-    ["Patrimonio", fmtBal(m.worth), `${fmt0(m.liquid)} líquido`],
-    ...(r.projection ? [["En 12 meses, a este ritmo", fmtBal(r.projection.value), `${r.projection.monthlySaving >= 0 ? "ahorrando" : "perdiendo"} ${fmt0(Math.abs(r.projection.monthlySaving))} al mes`]] : []),
+    ["Patrimonio", hid(fmtBal(m.worth)), view.hide ? "oculto en Inicio" : `${fmt0(m.liquid)} líquido`],
+    ...(r.projection ? [["En 12 meses, a este ritmo", hid(fmtBal(r.projection.value)), `${r.projection.monthlySaving >= 0 ? "ahorrando" : "perdiendo"} ${fmt0(Math.abs(r.projection.monthlySaving))} al mes`]] : []),
   ];
   return `<section class="section">
     <div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Tu asesor</h2><span class="sub">Analiza todo lo que registras, en tu dispositivo</span></div>
@@ -1031,7 +1060,14 @@ function viewAsesor() {
     </div>` : `<p class="muted">Con algo más de información te daré una puntuación de salud financiera.</p>`}
   </section>
   <section class="section"><div class="metrics">${metrics.map(([l, v, sub]) => `<div class="metric"><small>${l}</small><b class="num">${v}</b><span>${sub}</span></div>`).join("")}</div></section>
+  <section class="section"><div class="sec-head"><h2>Tu siguiente paso</h2><span class="sub">El orden que siguen los grandes planificadores</span></div>
+    <ol class="ladder">${r.ladder.map((x, i) => `<li class="${x.state}"><span class="step">${x.state === "done" ? ic("check") : i + 1}</span><div><b>${esc(x.t)}</b><small>${esc(x.d)}</small></div>${x.state === "now" ? `<em>Ahora</em>` : ""}</li>`).join("")}</ol>
+  </section>
+  ${r.split ? splitBar(r.split) : ""}
   <section class="section"><div class="sec-head"><h2>Qué veo en tus finanzas</h2></div><div class="insights">${r.insights.map(insightCard).join("")}</div></section>
+  <section class="section"><details class="experts"><summary>En qué se basa tu asesor</summary>
+    <div class="exp-list">${EXPERTS.map(([n, w, i]) => `<div><b>${n}</b><small>${w}</small><p>${i}</p></div>`).join("")}</div>
+  </details></section>
   <section class="section"><p class="disclaimer">Este análisis es automático y orientativo. Se basa solo en lo que has registrado y no sustituye a un asesor financiero profesional ni es una recomendación para comprar o vender ningún producto.</p></section>`;
 }
 
@@ -1063,7 +1099,7 @@ function viewPerfil() {
   <section class="section"><div class="sec-head"><h2>Eliminar perfil</h2></div><div class="settings">
     <div class="set-row"><div><b>Borrar este perfil y todos sus datos</b><small>No se puede deshacer. Exporta antes una copia si la quieres conservar.</small></div><div class="btns"><button class="btn btn-danger" data-act="deleteProfile">${ic("trash")}Eliminar perfil</button></div></div>
   </div></section>
-  <section class="section"><p class="disclaimer">Cuentas claras · versión 2.0 · Sin servidores, sin anuncios, sin rastreo.</p></section>`;
+  <section class="section"><p class="disclaimer">Cuentas claras · versión 2.1 · Sin servidores, sin anuncios, sin rastreo.</p></section>`;
 }
 
 function openOnboarding() {

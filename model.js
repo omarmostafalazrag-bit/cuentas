@@ -1,12 +1,12 @@
 // The data model and every calculation on it. Pure functions only: no DOM, no storage.
 // Money is always integer cents. Quantities (shares, coins, grams) are plain numbers.
 
-import { ym, uid, sum, addMonths, addDays, isDate, daysInMonth } from "./util.js?v=6";
+import { ym, uid, sum, addMonths, addDays, isDate, daysInMonth } from "./util.js?v=7";
 
 export const SCHEMA = 2;
 
 export const CATS = {
-  out: ["Supermercado", "Restaurantes", "Vivienda", "Transporte", "Suscripciones", "Ocio", "Estudios", "Salud", "Ropa", "Regalos", "Hogar", "Otros gastos"],
+  out: ["Supermercado", "Restaurantes", "Vivienda", "Transporte", "Suscripciones", "Ocio", "Estudios", "Salud", "Ropa", "Regalos", "Donaciones", "Hogar", "Otros gastos"],
   in: ["Nómina", "Facturación", "Beca", "Ayuda familiar", "Ventas", "Intereses", "Otros ingresos"],
 };
 

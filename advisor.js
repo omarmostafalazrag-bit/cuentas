@@ -2,10 +2,12 @@
 // It runs entirely on the device. It gives general financial-health guidance, never
 // buy/sell recommendations for specific products.
 
-import { ym, addMonths, daysInMonth, sum, fmt0, fmtPct, MONTHS } from "./util.js?v=6";
-import { isStat, monthTotals, categorySums, accountBalances, savingsSummary, debtsSummary, debtState, fixedSummary, ASSET_KINDS } from "./model.js?v=6";
+import { ym, addMonths, daysInMonth, sum, fmt0, fmtPct, MONTHS } from "./util.js?v=7";
+import { isStat, monthTotals, categorySums, accountBalances, savingsSummary, debtsSummary, debtState, fixedSummary, ASSET_KINDS } from "./model.js?v=7";
 
 const LEVEL = { critical: 0, warn: 1, info: 2, good: 3 };
+/** Spending categories that count as needs in the 50/30/20 split. */
+export const NEEDS = ["Supermercado", "Vivienda", "Transporte", "Salud", "Estudios", "Hogar"];
 
 /** Months (YYYY-MM) that have at least one real movement, oldest first. */
 function activeMonths(d) {
@@ -36,7 +38,7 @@ export function analyze(d, today) {
   const invested = sav.total - sav.liquidSavings;
 
   const insights = [];
-  const add = (level, title, body, action) => insights.push({ level, title, body, action });
+  const add = (level, title, body, action, src) => insights.push({ level, title, body, action, src: src || null });
 
   const enoughData = months.length > 0;
   if (!enoughData) {
@@ -52,13 +54,13 @@ export function analyze(d, today) {
     const span = full.length ? `de media en los últimos ${full.length === 1 ? "mes" : full.length + " meses"}` : "este mes";
     if (rate < 0) add("critical", "Gastas más de lo que ingresas",
       `${span.charAt(0).toUpperCase() + span.slice(1)} gastas ${fmt0(rateBase.o - rateBase.i)} más de lo que entra. Así, tus ahorros bajan cada mes.`,
-      "Revisa las dos categorías en las que más gastas y fija un presupuesto para cada una en Movimientos.");
+      "Revisa las dos categorías en las que más gastas y fija un presupuesto para cada una en Movimientos.", "Gasta menos de lo que ganas · base de toda planificación");
     else if (rate < 0.1) add("warn", "Tu margen de ahorro es pequeño",
       `Ahorras el ${fmtPct(rate)} de lo que ingresas ${span}. Una referencia habitual es apartar entre el 10 % y el 20 %.`,
-      `Apartar ${fmt0(Math.max(0, rateBase.i * 0.1 - (rateBase.i - rateBase.o)))} más al mes te llevaría al 10 %.`);
+      `Págate primero: el día que cobres, aparta ${fmt0(Math.max(0, rateBase.i * 0.1))} a ahorros antes de gastar nada. Así llegarías al 10 %.`, "«Págate primero a ti» · George S. Clason, El hombre más rico de Babilonia");
     else if (rate < 0.2) add("info", "Ahorras a buen ritmo",
       `Guardas el ${fmtPct(rate)} de lo que ingresas ${span}.`,
-      "Si quieres subir al 20 %, prueba a mover el dinero a ahorros justo al cobrar, antes de gastar.");
+      "Si quieres subir al 20 %, automatiza: mueve el dinero a ahorros justo al cobrar, antes de gastar.", "Ahorro automático · Ramit Sethi");
     else add("good", "Excelente capacidad de ahorro",
       `Guardas el ${fmtPct(rate)} de lo que ingresas ${span}. Estás por encima del 20 % que suele recomendarse.`, null);
   }
@@ -69,10 +71,10 @@ export function analyze(d, today) {
     const m = monthsCovered.toLocaleString("es-ES", { maximumFractionDigits: 1 });
     if (monthsCovered < 1) add("critical", "No tienes colchón para imprevistos",
       `Tu dinero disponible y tus ahorros líquidos (${fmt0(liquid)}) cubren menos de un mes de tus gastos habituales (${fmt0(avgOut)} al mes).`,
-      "Antes de invertir, intenta reunir al menos un mes de gastos en efectivo o en una cuenta.");
+      "Antes de invertir, intenta reunir al menos un mes de gastos en efectivo o en una cuenta.", "Fondo de emergencia · Dave Ramsey y Suze Orman");
     else if (monthsCovered < 3) add("warn", "Tu fondo de emergencia es corto",
       `Con ${fmt0(liquid)} líquidos cubrirías unos ${m} meses de gastos. Lo recomendable son entre 3 y 6 meses.`,
-      `Te faltan unos ${fmt0(avgOut * 3 - liquid)} para llegar a 3 meses.`);
+      `Te faltan unos ${fmt0(avgOut * 3 - liquid)} para llegar a 3 meses.`, "Fondo de emergencia de 3 a 6 meses · Suze Orman");
     else if (monthsCovered <= 6) add("good", "Tienes un buen fondo de emergencia",
       `Tu liquidez cubre unos ${m} meses de gastos, dentro de lo recomendable.`, null);
     else add("info", "Tienes mucha liquidez",
@@ -86,12 +88,16 @@ export function analyze(d, today) {
     for (const k of full) for (const [c, v] of Object.entries(categorySums(d, k))) avgCat[c] = (avgCat[c] || 0) + v / full.length;
     const curCat = categorySums(d, cur);
     const pace = dim / Math.max(1, day);
+    // One-off monthly charges (rent, a yearly bill) must not be projected forward:
+    // only categories with several movements this month are extrapolated.
+    const countCur = {};
+    for (const t of d.tx) if (isStat(t) && t.type === "out" && ym(t.date) === cur) countCur[t.cat] = (countCur[t.cat] || 0) + 1;
     const rising = Object.entries(curCat)
-      .map(([c, v]) => ({ c, v, proj: v * pace, avg: avgCat[c] || 0 }))
+      .map(([c, v]) => ({ c, v, proj: (countCur[c] || 0) >= 3 ? v * pace : v, avg: avgCat[c] || 0 }))
       .filter(x => x.avg > 0 && x.proj > x.avg * 1.3 && x.proj - x.avg > 3000 && day >= 7)
       .sort((a, b) => (b.proj - b.avg) - (a.proj - a.avg)).slice(0, 2);
     for (const x of rising) add("warn", `${x.c}: vas por encima de lo habitual`,
-      `Llevas ${fmt0(x.v)} este mes. A este ritmo acabarías en unos ${fmt0(x.proj)}, frente a ${fmt0(x.avg)} de media.`,
+      x.proj > x.v ? `Llevas ${fmt0(x.v)} este mes. A este ritmo acabarías en unos ${fmt0(x.proj)}, frente a ${fmt0(x.avg)} de media.` : `Llevas ${fmt0(x.v)} este mes, frente a ${fmt0(x.avg)} de media.`,
       "Si no es un gasto puntual, ponle un presupuesto a esta categoría.");
   }
 
@@ -159,7 +165,7 @@ export function analyze(d, today) {
       "Un recordatorio amable a tiempo evita malentendidos.");
     if (dbt.dir === "owe" && dbt.apr >= 10) add("warn", `Interés alto: ${dbt.who}`,
       `Esta deuda tiene un ${String(dbt.apr).replace(".", ",")} % de interés anual: te cuesta unos ${fmt0(x.remaining * dbt.apr / 100 / 12)} al mes solo en intereses.`,
-      liquid > x.remaining * 1.5 ? "Tienes liquidez para adelantar su pago; suele ser la mejor «inversión» posible." : "Si tienes varias deudas, paga primero la de mayor interés.");
+      liquid > x.remaining * 1.5 ? "Tienes liquidez para adelantar su pago; suele ser la mejor «inversión» posible." : "Si tienes varias deudas, paga primero la de mayor interés.", "Método avalancha");
   }
   if (debts.owe > 0 && avgIn > 0 && debts.monthly / avgIn > 0.35) add("warn", "Tus cuotas de deuda pesan mucho",
     `Pagas ${fmt0(debts.monthly)} al mes en cuotas, el ${fmtPct(debts.monthly / avgIn)} de tus ingresos. Por encima del 35 % se considera arriesgado.`,
@@ -183,12 +189,12 @@ export function analyze(d, today) {
       const share = top.value / invested;
       if (investItems.length >= 1 && share > 0.6 && invested > 50000) add("warn", "Tu inversión está muy concentrada",
         `${top.asset.name} supone el ${fmtPct(share)} de todo lo que tienes invertido. Si baja, arrastra a todo tu patrimonio.`,
-        "Repartir entre varios tipos de activo reduce el riesgo de depender de uno solo.");
+        "Repartir entre muchos activos distintos reduce el riesgo de depender de uno solo.", "Diversificación · Harry Markowitz y John Bogle");
     }
     const crypto = sav.byKind.crypto || 0;
     if (worth > 0 && crypto / worth > 0.3) add("warn", "Mucho peso en criptomonedas",
       `Las criptomonedas son el ${fmtPct(crypto / worth)} de tu patrimonio. Su precio puede caer mucho en poco tiempo.`,
-      "Una pauta prudente es no tener en activos muy volátiles más de lo que podrías perder sin que afecte a tu día a día.");
+      "Una pauta prudente es no tener en activos muy volátiles más de lo que podrías perder sin que afecte a tu día a día.", "Gestión del riesgo · Benjamin Graham");
     if (monthsCovered !== null && monthsCovered < 1 && invested > 0) add("warn", "Inviertes sin colchón",
       `Tienes ${fmt0(invested)} invertidos pero menos de un mes de gastos en liquidez. Ante un imprevisto podrías tener que vender en mal momento.`,
       "Prioriza el fondo de emergencia antes de seguir invirtiendo.");
@@ -217,6 +223,100 @@ export function analyze(d, today) {
       "Calcula tu presupuesto con el mes de ingresos más bajo, no con la media.");
   }
 
+
+  // ---- Principles from well-known personal-finance authors ------------------------------
+  const refCats = {};
+  const catMonths = full.length ? full : (months.includes(cur) ? [cur] : []);
+  for (const k of catMonths) for (const [c, v] of Object.entries(categorySums(d, k))) refCats[c] = (refCats[c] || 0) + v / catMonths.length;
+  const activeOwe = debts.items.filter(x => x.debt.dir === "owe" && !x.done);
+  const instalments = sum(activeOwe.map(x => x.debt.monthly || 0));
+
+  // P1. 50/30/20 (Elizabeth Warren): needs, wants, savings
+  let split = null;
+  if (avgIn > 0 && catMonths.length) {
+    const needs = sum(NEEDS.map(c => refCats[c] || 0)) + instalments;
+    const give = refCats.Donaciones || 0;
+    const wants = sum(Object.entries(refCats).filter(([c]) => !NEEDS.includes(c) && c !== "Donaciones").map(([, v]) => v));
+    const save = avgIn - needs - wants - give;
+    split = { income: avgIn, needs, wants, give, save, pNeeds: needs / avgIn, pWants: (wants + give) / avgIn, pSave: save / avgIn };
+    const p = x => fmtPct(Math.max(0, x));
+    const body = `Ahora mismo: necesidades ${p(split.pNeeds)}, caprichos ${p(split.pWants)} y ahorro ${p(split.pSave)} de tus ingresos. La referencia es 50 % · 30 % · 20 %.`;
+    if (split.pNeeds > 0.6) add("warn", "Tus gastos básicos pesan mucho", body,
+      "Vivienda y transporte suelen ser lo que más mueve la aguja: compartir piso, cambiar de tarifa o de abono pesa más que recortar cafés.", "Regla 50/30/20 · Elizabeth Warren");
+    else if (split.pWants > 0.35) add("warn", "Los caprichos se llevan mucho", body,
+      `Si los bajas al 30 %, liberarías unos ${fmt0((split.pWants - 0.3) * avgIn)} al mes para ahorrar.`, "Regla 50/30/20 · Elizabeth Warren");
+    else if (split.pSave >= 0.2) add("good", "Tu reparto es sano", body, null, "Regla 50/30/20 · Elizabeth Warren");
+    else add("info", "Cómo repartes tu dinero", body,
+      "Intenta que cada euro tenga un destino al empezar el mes: primero ahorro, luego básicos, luego el resto.", "Regla 50/30/20 · Elizabeth Warren");
+  }
+
+  // P2. Several debts: avalanche (highest interest first) vs. snowball (smallest first)
+  if (activeOwe.length >= 2) {
+    const aval = [...activeOwe].sort((a, b) => (b.debt.apr || 0) - (a.debt.apr || 0) || a.remaining - b.remaining);
+    const snow = [...activeOwe].sort((a, b) => a.remaining - b.remaining);
+    const hasApr = activeOwe.some(x => x.debt.apr > 0);
+    const list = arr => arr.slice(0, 4).map((x, i) => `${i + 1}. ${x.debt.who} (${fmt0(x.remaining)}${x.debt.apr ? `, ${String(x.debt.apr).replace(".", ",")} %` : ""})`).join(" · ");
+    add("info", "Plan para salir de tus deudas",
+      hasApr ? `Paga el mínimo en todas y destina todo lo extra a una sola, por este orden de interés: ${list(aval)}.` : `Paga el mínimo en todas y destina todo lo extra a la más pequeña: ${list(snow)}.`,
+      hasApr && aval[0] !== snow[0] ? `Si te motiva más ver deudas cerradas pronto, el orden «bola de nieve» empieza por ${snow[0].debt.who} (${fmt0(snow[0].remaining)}). Ahorra menos intereses el primero; el segundo ayuda a no abandonar.` : "Cada deuda que cierres libera su cuota para la siguiente.",
+      hasApr ? "Método avalancha · y bola de nieve de Dave Ramsey" : "Bola de nieve · Dave Ramsey");
+  }
+
+  // P3. Investing while carrying expensive debt
+  const pricey = activeOwe.filter(x => x.debt.apr >= 7).sort((a, b) => b.debt.apr - a.debt.apr)[0];
+  if (pricey && invested > 0) add("warn", "Inviertes mientras pagas intereses altos",
+    `Tienes ${fmt0(invested)} invertidos y a la vez una deuda al ${String(pricey.debt.apr).replace(".", ",")} % con ${pricey.debt.who}. Pagarla equivale a una rentabilidad segura de ese ${String(pricey.debt.apr).replace(".", ",")} %, algo que casi ninguna inversión garantiza.`,
+    "Antes de aportar más a inversiones, valora adelantar el pago de esa deuda.", "Idea defendida por Warren Buffett");
+
+  // P4. Lifestyle creep: spending growing faster than income
+  const recent3 = [1, 2, 3].map(i => addMonths(cur, -i)), prev3 = [4, 5, 6].map(i => addMonths(cur, -i));
+  if (recent3.every(k => months.includes(k)) && prev3.filter(k => months.includes(k)).length >= 2) {
+    const avg = (ks, f) => { const xs = ks.filter(k => months.includes(k)).map(k => monthTotals(d, k)[f]); return sum(xs) / xs.length; };
+    const oR = avg(recent3, "o"), oP = avg(prev3, "o"), iR = avg(recent3, "i"), iP = avg(prev3, "i");
+    const gO = oP > 0 ? oR / oP - 1 : 0, gI = iP > 0 ? iR / iP - 1 : 0;
+    if (gO > 0.15 && gO - gI > 0.1 && oR - oP > 5000) add("info", "Tu gasto crece más rápido que tus ingresos",
+      `En los últimos 3 meses gastas un ${fmtPct(gO)} más que en los 3 anteriores, mientras que tus ingresos ${gI > 0.005 ? `han subido un ${fmtPct(gI)}` : "no han subido"}.`,
+      "Cuando ganes más, decide antes qué parte va a ahorro. La riqueza es lo que no gastas.", "Inflación del estilo de vida · Morgan Housel, La psicología del dinero");
+  }
+
+  // P5. Subscriptions audit
+  const subs = refCats.Suscripciones || 0;
+  if (avgIn > 0 && subs > 1500 && subs / avgIn > 0.05) add("info", "Revisa tus suscripciones",
+    `Pagas unos ${fmt0(subs)} al mes en suscripciones, el ${fmtPct(subs / avgIn)} de lo que ingresas.`,
+    "Cancela todas las que no hayas usado en el último mes. Si echas alguna de menos, la vuelves a contratar.", "Gasto consciente · Ramit Sethi");
+
+  // P6. Donations
+  const give = refCats.Donaciones || 0;
+  if (give > 0 && avgIn > 0) {
+    const g = give / avgIn;
+    if (monthsCovered !== null && monthsCovered < 1 && g > 0.1) add("info", "Donas mucho para tu colchón actual",
+      `Donas el ${fmtPct(g)} de tus ingresos y tu colchón cubre menos de un mes. Dar es muy valioso; hacerlo de forma sostenible te permite seguir dando.`,
+      "Puedes mantener una donación fija más pequeña hasta completar tu fondo de emergencia.");
+    else add("good", "Tus donaciones", `Destinas unos ${fmt0(give)} al mes a donaciones, el ${fmtPct(g)} de tus ingresos.`,
+      "Guarda los justificantes: en España los donativos a ONG acogidas a la Ley 49/2002 desgravan en la declaración de la renta.");
+  }
+
+  // P7. Long term and compound interest (illustrative, never a promise)
+  const msave = (full.length ? avgIn - avgOut : now.i - now.o);
+  if (ref.length && msave > 2000 && monthsCovered !== null && monthsCovered >= 3 && !pricey) {
+    const fv = (pm, r, n) => pm * ((Math.pow(1 + r / 12, n) - 1) / (r / 12));
+    add("info", "El tiempo es tu mejor aliado",
+      `Si invirtieras ${fmt0(msave)} al mes durante 20 años, aportarías ${fmt0(msave * 240)}. Con una rentabilidad hipotética del 5 % anual llegarías a unos ${fmt0(fv(msave, 0.05, 240))}. Ese ejemplo no está garantizado: los mercados suben y bajan.`,
+      "Para el largo plazo, suelen recomendarse productos muy diversificados y con comisiones bajas, y no tocarlos en las caídas.", "Interés compuesto · John Bogle y Warren Buffett");
+  }
+
+  // Priority ladder: what to focus on now, in order
+  const hasData = avgOut > 0;
+  const ladder = [
+    { t: "Colchón de un mes", d: "Un mes de gastos en efectivo o en cuenta para imprevistos.", ok: hasData && monthsCovered >= 1 },
+    { t: "Sin deudas caras", d: "Paga primero las deudas con interés del 7 % o más.", ok: !activeOwe.some(x => x.debt.apr >= 7) },
+    { t: "Colchón completo", d: "Entre 3 y 6 meses de gastos guardados.", ok: hasData && monthsCovered >= 3 },
+    { t: "Ahorra el 20 %", d: "Aparta al menos el 20 % de lo que ingresas.", ok: rate !== null && rate >= 0.2 },
+    { t: "Invierte a largo plazo", d: "Diversificado, con comisiones bajas y sin prisa.", ok: invested > 0 },
+  ];
+  const curStep = hasData ? ladder.findIndex(x => !x.ok) : 0;
+  ladder.forEach((x, i) => { x.state = x.ok ? "done" : i === curStep ? "now" : "next"; });
+
   // Projection
   const monthlySaving = rateBase.i - rateBase.o;
   const projection = ref.length ? { months: 12, value: worth + monthlySaving * 12, monthlySaving } : null;
@@ -242,7 +342,7 @@ export function analyze(d, today) {
   insights.sort((a, b) => LEVEL[a.level] - LEVEL[b.level]);
   return {
     score, scoreParts: parts, enoughData, insights, projection,
-    metrics: { avgIn, avgOut, rate, monthsCovered, liquid, worth, available, invested, savings: sav.total, refMonths: ref.length, recurring, owe: debts.owe, owed: debts.owed, fixedLoad },
+    ladder, split, metrics: { avgIn, avgOut, rate, monthsCovered, liquid, worth, available, invested, savings: sav.total, refMonths: ref.length, recurring, owe: debts.owe, owed: debts.owed, fixedLoad },
   };
 }
 
