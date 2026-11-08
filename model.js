@@ -1,7 +1,7 @@
 // The data model and every calculation on it. Pure functions only: no DOM, no storage.
 // Money is always integer cents. Quantities (shares, coins, grams) are plain numbers.
 
-import { ym, uid, sum, addMonths, addDays, isDate, daysInMonth } from "./util.js?v=7";
+import { ym, uid, sum, addMonths, addDays, isDate, daysInMonth } from "./util.js?v=8";
 
 export const SCHEMA = 2;
 
@@ -303,7 +303,16 @@ export function validateDebt(x) {
 export function addDebtOp(d, debtId, op, account) {
   const x = d.debts.find(y => y.id === debtId);
   const full = { id: uid(), seq: nextSeq(d), note: "", ...op };
-  if (account && op.amount > 0) {
+  if (String(account || "").startsWith("asset:") && op.amount > 0) {
+    // The money comes from (or goes into) a savings item instead of an everyday account.
+    const assetId = account.slice(6), a = d.assets.find(y => y.id === assetId);
+    if (a && !ASSET_KINDS[a.kind]?.unit) {
+      const moneyIn = (x.dir === "owe") === (op.type !== "pay");
+      const verb = x.dir === "owe" ? (op.type === "pay" ? "Pago a" : "Préstamo de") : (op.type === "pay" ? "Cobro de" : "Préstamo a");
+      const aop = { id: uid(), seq: nextSeq(d), type: moneyIn ? "buy" : "sell", amount: op.amount, date: op.date, note: `${verb} ${x.who}`, debt: debtId };
+      a.ops.push(aop); full.assetOp = { asset: assetId, op: aop.id };
+    }
+  } else if (account && op.amount > 0) {
     // owe: money in when it starts or grows, out when you pay. owed: the reverse.
     const moneyIn = (x.dir === "owe") === (op.type !== "pay");
     const verb = x.dir === "owe" ? (op.type === "pay" ? "Pago a" : "Préstamo de") : (op.type === "pay" ? "Cobro de" : "Préstamo a");
@@ -318,13 +327,21 @@ export function removeDebtOp(d, debtId, opId) {
   const op = x.ops.find(o => o.id === opId);
   x.ops = x.ops.filter(o => o.id !== opId);
   if (op?.tx) d.tx = d.tx.filter(t => t.id !== op.tx);
+  if (op?.assetOp) dropAssetOp(d, op.assetOp);
   return op;
 }
+function dropAssetOp(d, ref) {
+  const a = d.assets.find(y => y.id === ref.asset);
+  if (a) a.ops = a.ops.filter(o => o.id !== ref.op);
+}
+/** Liquid savings that can pay or receive money directly (savings cash and bank accounts). */
+export const liquidAssets = d => d.assets.filter(a => ASSET_KINDS[a.kind]?.liquid);
 export function removeDebt(d, debtId) {
   const x = d.debts.find(y => y.id === debtId); if (!x) return;
   const linked = new Set(x.ops.map(o => o.tx).filter(Boolean));
   d.debts = d.debts.filter(y => y.id !== debtId);
   d.tx = d.tx.filter(t => !linked.has(t.id));
+  for (const o of x.ops) if (o.assetOp) dropAssetOp(d, o.assetOp);
   for (const f of d.fixed) if (f.debt === debtId) delete f.debt;
 }
 

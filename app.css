@@ -514,3 +514,10 @@ button.linked{transition:background-color 120ms ease}
 .exp-list small{color:var(--ink-3);font-size:12.5px}
 .exp-list p{color:var(--ink-2);font-size:14px;margin-top:4px}
 .split-legend + .hint{margin-top:12px}
+
+/* ---------- fix balances ---------- */
+.fixgroup{display:grid;gap:12px}
+.fixgroup h3{font-size:13px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3)}
+.fixrow .lbl{display:flex;align-items:center;gap:8px}
+.fixrow .lbl svg{width:17px;height:17px;color:var(--ink-3)}
+.fixrow .lbl small{margin-left:auto;color:var(--ink-3);font-weight:400}

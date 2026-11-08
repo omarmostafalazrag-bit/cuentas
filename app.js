@@ -1,11 +1,11 @@
 // Cuentas claras — UI layer. Renders from the in-memory data of the open profile and
 // writes every change through the encrypted Session.
 
-import * as U from "./util.js?v=7";
-import * as V from "./vault.js?v=7";
-import * as M from "./model.js?v=7";
-import { analyze, scoreWord } from "./advisor.js?v=7";
-import * as Q from "./quotes.js?v=7";
+import * as U from "./util.js?v=8";
+import * as V from "./vault.js?v=8";
+import * as M from "./model.js?v=8";
+import { analyze, scoreWord } from "./advisor.js?v=8";
+import * as Q from "./quotes.js?v=8";
 
 const { esc, fmt, fmt0, fmtBal, fmtSigned, fmtNum, fmtPct, sum } = U;
 const $ = (s, el = document) => el.querySelector(s);
@@ -147,6 +147,21 @@ function accountChips(name, selected, { none = false, noneLabel = "Ninguna", exc
   return `<div class="chips">${none ? `<label><input type="radio" name="${name}" value=""${!selected ? " checked" : ""}><span>${esc(noneLabel)}</span></label>` : ""}${D.accounts.filter(a => a.id !== exclude).map(a =>
     `<label><input type="radio" name="${name}" value="${esc(a.id)}"${a.id === selected ? " checked" : ""}><span>${ic(ACCT_ICON[a.kind] || "card")}${esc(a.name)} <small class="num">${fmtBal(bal[a.id])}</small></span></label>`).join("")}</div>`;
 }
+
+/** Accounts plus liquid savings (savings cash, bank accounts) as places money can come from or go to. */
+function sourceChips(name, selected, opts = {}) {
+  const sav = M.liquidAssets(D);
+  const base = accountChips(name, selected, opts);
+  if (!sav.length) return base;
+  return base.replace(/<\/div>$/, sav.map(a => `<label><input type="radio" name="${name}" value="asset:${esc(a.id)}"${"asset:" + a.id === selected ? " checked" : ""}><span>${ic("vault")}${esc(a.name)} <small class="num">${fmtBal(M.assetState(a).value)}</small></span></label>`).join("") + "</div>");
+}
+/** Checks that a savings item has enough money for an amount that leaves it. */
+function sourceError(src, amount, out) {
+  if (!out || !String(src || "").startsWith("asset:")) return null;
+  const a = D.assets.find(x => x.id === src.slice(6)); const v = a ? M.assetState(a).value : 0;
+  return amount > v ? `En ${a ? a.name : "esos ahorros"} solo tienes ${fmt(v)}.` : null;
+}
+const sourceName = o => o.assetOp ? (D.assets.find(a => a.id === o.assetOp.asset)?.name || "Ahorro eliminado") : o.tx ? acctName(D.tx.find(t => t.id === o.tx)?.account) : "";
 
 /* ======================================================================
    Files: share sheet on iPhone, download elsewhere
@@ -389,6 +404,7 @@ document.addEventListener("click", e => {
     case "acctEdit": openAccount(id); break;
     case "acctNew": openAccount(null); break;
     case "acctAdjust": openAdjust(id); break;
+    case "fixMoney": openFixMoney(a.dataset.scope); break;
     case "rename": openRename(); break;
     case "password": openPassword(); break;
     case "backup": doBackup(); break;
@@ -470,7 +486,7 @@ function viewInicio() {
   </section>
 
   <section class="section">
-    <div class="sec-head"><h2>Tu dinero para el día a día</h2><span class="sub">Toca una cuenta para apuntar un gasto</span></div>
+    <div class="sec-head"><h2>Tu dinero para el día a día</h2><button class="btn btn-ghost" data-act="fixMoney">${ic("check")}Corregir saldos</button></div>
     <div class="accounts">${D.accounts.map(a => { const m = byAcct(a.id); return `
       <button class="acct" style="text-align:left" data-act="newTx" data-account="${esc(a.id)}">
         <span class="acct-top">${ic(ACCT_ICON[a.kind] || "card")}${esc(a.name)}</span>
@@ -775,7 +791,7 @@ function viewAssets() {
   const gainItems = sav.items.filter(x => !M.ASSET_KINDS[x.asset.kind].liquid && x.invested > 0);
   const g = sum(gainItems.map(x => x.gain)), inv = sum(gainItems.map(x => x.invested));
   return `<section class="section">
-    <div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Ahorros</h2><div class="actions-row" style="flex:0 0 auto">${D.assets.some(a => M.assetLinkKey(a)) ? `<button class="btn" data-act="refreshPrices">${ic("pulse")}Actualizar precios</button>` : ""}<button class="btn btn-primary" data-act="newAsset">${ic("plus")}Añadir ahorro</button></div></div>
+    <div class="sec-head"><h2 style="font:400 34px/1.1 var(--serif)">Ahorros</h2><div class="actions-row" style="flex:0 0 auto">${D.assets.some(a => M.assetLinkKey(a)) ? `<button class="btn" data-act="refreshPrices">${ic("pulse")}Actualizar precios</button>` : ""}<button class="btn" data-act="fixMoney" data-scope="sav">${ic("check")}Corregir</button><button class="btn btn-primary" data-act="newAsset">${ic("plus")}Añadir ahorro</button></div></div>
     <div class="kicker-num">Total ahorrado e invertido</div><div class="big num">${fmt0(sav.total)}</div>
     ${inv ? `<p class="muted" style="margin-top:8px">En inversiones has puesto ${fmt0(inv)} y ahora valen ${fmt0(inv + g)}: <b class="${g >= 0 ? "pos" : "neg"}">${fmtSigned(g, 0)} (${U.fmtPctSigned(g / inv)})</b></p>` : ""}
     ${sav.total > 0 ? `<div class="alloc" role="img" aria-label="Reparto: ${kinds.map(k => `${M.ASSET_KINDS[k].short} ${fmtPct(sav.byKind[k] / sav.total)}`).join(", ")}">${kinds.map(k => `<i style="width:${sav.byKind[k] / sav.total * 100}%;background:var(--k-${k})"></i>`).join("")}</div>
@@ -955,8 +971,8 @@ function openAsset(id) {
         <button class="btn" data-op="${k.unit ? "price" : "value"}">${ic("chart")}${k.unit ? "Actualizar precio" : "Actualizar valor"}</button>
       </div>
       <div><div class="sec-head" style="margin:8px 0 0"><h2 style="font-size:15px">Historial</h2></div>
-      <ul class="ops">${ops.map(o => `<li><span>${OP_LABEL[o.type]}<small>${U.dayLabel(o.date)}${o.date.slice(0, 4) !== today().slice(0, 4) ? " " + o.date.slice(0, 4) : ""}</small></span><span class="num">${opText(o)}</span>
-        <button class="btn btn-ghost btn-icon" data-delop="${esc(o.id)}" aria-label="Borrar esta operación"${a.ops.length === 1 ? " disabled" : ""}>${ic("trash")}</button></li>`).join("")}</ul></div>
+      <ul class="ops">${ops.map(o => `<li><span>${o.debt ? (o.type === "sell" ? "Salida" : "Entrada") : OP_LABEL[o.type]}<small>${U.dayLabel(o.date)}${o.date.slice(0, 4) !== today().slice(0, 4) ? " " + o.date.slice(0, 4) : ""}${o.note ? ` · ${esc(o.note)}` : ""}</small></span><span class="num">${opText(o)}</span>
+        <button class="btn btn-ghost btn-icon" data-delop="${esc(o.id)}" aria-label="${o.debt ? "Se borra desde la deuda" : "Borrar esta operación"}"${a.ops.length === 1 || o.debt ? " disabled" : ""}>${ic("trash")}</button></li>`).join("")}</ul></div>
     </div>`,
     foot: `<button class="btn btn-ghost btn-danger" id="assetDel">${ic("trash")}Eliminar</button><button class="btn" id="assetEdit">Editar</button>`,
     mount: el => {
@@ -1059,6 +1075,12 @@ function viewAsesor() {
       <div class="parts">${r.scoreParts.map(p => `<div class="part"><span>${p.label}</span><div class="track" aria-hidden="true"><i style="width:${p.pts / 25 * 100}%"></i></div><b class="num">${p.pts}/25</b></div>`).join("")}</div>
     </div>` : `<p class="muted">Con algo más de información te daré una puntuación de salud financiera.</p>`}
   </section>
+  ${r.enoughData ? `<section class="section"><div class="sec-head"><h2>Este mes</h2><span class="sub">${r.month.daysLeft === 1 ? "Último día" : `Quedan ${r.month.daysLeft} días`}</span></div>
+    <div class="stats3">
+      <div class="stat"><h3>Puedes gastar al día</h3><div class="mid num">${fmt(r.month.safeDaily)}</div><div class="delta"><span>${r.month.goalLeft ? `guardando ${fmt(r.month.goalLeft)} para ahorro` : "objetivo de ahorro cumplido"}</span></div></div>
+      <div class="stat"><h3>Previsión a fin de mes</h3><div class="mid num${r.month.forecast < 0 ? " neg" : ""}">${fmtBal(r.month.forecast)}</div><div class="delta"><span>en tus cuentas, a tu ritmo habitual</span></div></div>
+      <div class="stat"><h3>Fijos por pagar</h3><div class="mid num">${fmt(r.month.leftOut)}</div><div class="delta"><span>${r.month.leftIn ? `y te entran ${fmt(r.month.leftIn)}` : "hasta fin de mes"}</span></div></div>
+    </div></section>` : ""}
   <section class="section"><div class="metrics">${metrics.map(([l, v, sub]) => `<div class="metric"><small>${l}</small><b class="num">${v}</b><span>${sub}</span></div>`).join("")}</div></section>
   <section class="section"><div class="sec-head"><h2>Tu siguiente paso</h2><span class="sub">El orden que siguen los grandes planificadores</span></div>
     <ol class="ladder">${r.ladder.map((x, i) => `<li class="${x.state}"><span class="step">${x.state === "done" ? ic("check") : i + 1}</span><div><b>${esc(x.t)}</b><small>${esc(x.d)}</small></div>${x.state === "now" ? `<em>Ahora</em>` : ""}</li>`).join("")}</ol>
@@ -1099,7 +1121,7 @@ function viewPerfil() {
   <section class="section"><div class="sec-head"><h2>Eliminar perfil</h2></div><div class="settings">
     <div class="set-row"><div><b>Borrar este perfil y todos sus datos</b><small>No se puede deshacer. Exporta antes una copia si la quieres conservar.</small></div><div class="btns"><button class="btn btn-danger" data-act="deleteProfile">${ic("trash")}Eliminar perfil</button></div></div>
   </div></section>
-  <section class="section"><p class="disclaimer">Cuentas claras · versión 2.1 · Sin servidores, sin anuncios, sin rastreo.</p></section>`;
+  <section class="section"><p class="disclaimer">Cuentas claras · versión 2.2 · Sin servidores, sin anuncios, sin rastreo.</p></section>`;
 }
 
 function openOnboarding() {
@@ -1187,6 +1209,56 @@ function openAdjust(id) {
         commit(d => d.tx.push({ id: U.uid(), seq: M.nextSeq(d), type: diff > 0 ? "in" : "out", amount: Math.abs(diff), account: id, cat: "Ajuste de saldo", concept: "Ajuste de saldo", date: today(), note: "", adj: true }), `Saldo de ${a.name}: ${fmtBal(real, 2)}`);
       };
       $("#adjSave", el).addEventListener("click", save);
+      form.addEventListener("submit", e => { e.preventDefault(); save(); });
+    },
+  });
+}
+
+/**
+ * Fix what the app thinks you have, without inventing income or spending: every account and
+ * every savings item that holds a plain amount, with its exact figure, in one sheet.
+ */
+function openFixMoney(scope) {
+  const bal = M.accountBalances(D);
+  const savings = D.assets.filter(a => !M.ASSET_KINDS[a.kind].unit);
+  const units = D.assets.filter(a => M.ASSET_KINDS[a.kind].unit);
+  const val = c => (c ? centsToInput(c) : "0,00");
+  const row = (key, icon, name, cur) => `<label class="field fixrow"><span class="lbl">${ic(icon)}${esc(name)}<small class="num">ahora ${fmtBal(cur)}</small></span>
+    <div class="money"><input class="in num" name="${key}" inputmode="decimal" autocomplete="off" value="${esc(val(cur))}" data-cur="${cur}"><em>€</em></div><small class="err" data-err="${key}"></small></label>`;
+  const accRows = D.accounts.map(a => row("acc:" + a.id, ACCT_ICON[a.kind] || "card", a.name, bal[a.id]));
+  const savRows = savings.map(a => row("sav:" + a.id, "vault", a.name, M.assetState(a).value));
+  const first = scope === "sav" ? [savRows, accRows] : [accRows, savRows];
+  const titles = scope === "sav" ? ["Ahorros", "Cuentas del día a día"] : ["Cuentas del día a día", "Ahorros"];
+  openSheet({
+    title: "Corregir lo que tienes",
+    body: `<form class="form" id="fixForm" novalidate>
+      <p class="muted">Escribe lo que tienes de verdad en cada sitio. Los cambios se guardan como ajuste: no cuentan como ingreso ni como gasto.</p>
+      ${first.map((rows, i) => rows.length ? `<div class="fixgroup"><h3>${titles[i]}</h3>${rows.join("")}</div>` : "").join("")}
+      ${units.length ? `<p class="hint">Para acciones, cripto u oro, corrige la cantidad o el precio desde el propio ahorro en Ahorros.</p>` : ""}
+      <button type="submit" hidden></button></form>`,
+    foot: `<button class="btn btn-primary" id="fixSave">Guardar cambios</button>`,
+    mount: el => {
+      const form = $("#fixForm", el);
+      const save = () => {
+        const errs = {}, changes = [];
+        for (const inp of $$("input[data-cur]", form)) {
+          const raw = inp.value.trim(), v = U.parseMoney(raw), cur = Number(inp.dataset.cur);
+          if (raw === "" || Number.isNaN(v)) { errs[inp.name] = "Escribe el importe solo con números."; continue; }
+          if (inp.name.startsWith("sav:") && v < 0) { errs[inp.name] = "Un ahorro no puede ser negativo."; continue; }
+          if (v !== cur) changes.push({ key: inp.name, v, cur });
+        }
+        if (!setErrors(form, errs)) return;
+        closeSheet();
+        if (!changes.length) { toast("Todo estaba bien, no he cambiado nada."); return; }
+        commit(d => {
+          for (const c of changes) {
+            const [kind, id] = [c.key.slice(0, 3), c.key.slice(4)];
+            if (kind === "acc") { const diff = c.v - c.cur; d.tx.push({ id: U.uid(), seq: M.nextSeq(d), type: diff > 0 ? "in" : "out", amount: Math.abs(diff), account: id, cat: "Ajuste de saldo", concept: "Corrección de saldo", date: today(), note: "", adj: true }); }
+            else M.addAssetOp(d, id, { type: "value", date: today(), value: c.v, note: "Corrección" });
+          }
+        }, changes.length === 1 ? "Saldo corregido" : `${changes.length} saldos corregidos`);
+      };
+      $("#fixSave", el).addEventListener("click", save);
       form.addEventListener("submit", e => { e.preventDefault(); save(); });
     },
   });
@@ -1718,8 +1790,8 @@ function openDebtForm(existing, dir = "owe") {
       ${textField("apr", "Interés anual %", f.apr ? String(f.apr).replace(".", ",") : "", { placeholder: "Ej. 7,5", optional: true, max: 6 })}
     </div>
     ${f.dir === "owe" ? moneyField("monthly", "Cuota mensual", f.monthly ? centsToInput(f.monthly) : "", { optional: true, hint: "Si pagas a plazos. Después podrás convertirla en gasto fijo para que se apunte sola." }) : ""}
-    ${edit ? "" : `<fieldset class="field"><legend>${f.dir === "owe" ? "¿Recibiste ese dinero en una de tus cuentas?" : "¿Salió ese dinero de una de tus cuentas?"}</legend>${accountChips("account", "", { none: true, noneLabel: "No" })}
-      <small class="hint">Si eliges una cuenta, su saldo cambia, pero no cuenta como ingreso ni como gasto.</small></fieldset>${dateField(today())}`}
+    ${edit ? "" : `<fieldset class="field"><legend>${f.dir === "owe" ? "¿Dónde recibiste ese dinero?" : "¿De dónde salió ese dinero?"}</legend>${sourceChips("account", "", { none: true, noneLabel: "En ninguna" })}
+      <small class="hint">Puedes elegir una cuenta o tus ahorros. Su saldo cambia, pero no cuenta como ingreso ni como gasto.</small><small class="err" data-err="account"></small></fieldset>${dateField(today())}`}
     <button type="submit" hidden></button></form>`;
   openSheet({
     title: edit ? `Editar deuda` : "Nueva deuda", body: render(),
@@ -1743,7 +1815,9 @@ function openDebtForm(existing, dir = "owe") {
         const data = { dir: f.dir, kind: radio(form, "kind") || f.kind, who: v("who"), concept: v("concept"), due: v("due") || "",
           apr: aprRaw ? Number(aprRaw.replace(",", ".")) : null, monthly: monRaw ? U.parseMoney(monRaw) : null,
           amount: edit ? 1 : U.parseMoney(v("amount")), date: edit ? today() : v("date") };
-        if (!setErrors(form, M.validateDebt(data))) return;
+        const derr = M.validateDebt(data);
+        if (!edit) { const se = sourceError(radio(form, "account"), data.amount, data.dir === "owed"); if (se) derr.account = se; }
+        if (!setErrors(form, derr)) return;
         const clean = { dir: data.dir, kind: data.kind, who: data.who, concept: data.concept, due: data.due || undefined, apr: data.apr || undefined, monthly: data.monthly || undefined };
         closeSheet();
         if (edit) { commit(d => { const y = d.debts.find(z => z.id === x.id); for (const k of ["concept", "due", "apr", "monthly"]) delete y[k]; Object.assign(y, Object.fromEntries(Object.entries(clean).filter(([, val]) => val !== undefined && val !== ""))); }, "Deuda actualizada"); openDebt(x.id); return; }
@@ -1786,7 +1860,7 @@ function openDebt(id) {
       </div>
       ${owe && x.monthly && !s.done ? (linkedFixed ? `<p class="hint">La cuota se apunta sola cada mes como gasto fijo («${esc(linkedFixed.name)}»).</p>` : `<button class="btn" id="mkFixed">${ic("swap")}Apuntar la cuota cada mes automáticamente</button>`) : ""}
       <div><div class="sec-head" style="margin:8px 0 0"><h2 style="font-size:15px">Historial</h2></div>
-      <ul class="ops">${ops.map(o => `<li><span>${DEBT_OP[o.type]}${o.type === "pay" && !owe ? " recibido" : ""}<small>${U.dayLabel(o.date)}${o.date.slice(0, 4) !== today().slice(0, 4) ? " " + o.date.slice(0, 4) : ""}${o.tx ? ` · ${esc(acctName(D.tx.find(t => t.id === o.tx)?.account))}` : ""}${o.note ? ` · ${esc(o.note)}` : ""}</small></span><span class="num">${o.type === "pay" ? "−" : "+"}${fmt(o.amount)}</span>
+      <ul class="ops">${ops.map(o => `<li><span>${DEBT_OP[o.type]}${o.type === "pay" && !owe ? " recibido" : ""}<small>${U.dayLabel(o.date)}${o.date.slice(0, 4) !== today().slice(0, 4) ? " " + o.date.slice(0, 4) : ""}${o.tx || o.assetOp ? ` · ${esc(sourceName(o))}` : ""}${o.note ? ` · ${esc(o.note)}` : ""}</small></span><span class="num">${o.type === "pay" ? "−" : "+"}${fmt(o.amount)}</span>
         <button class="btn btn-ghost btn-icon" data-deldop="${esc(o.id)}" aria-label="Borrar esta operación"${o.type === "start" && x.ops.filter(y => y.type === "start").length === 1 ? " disabled" : ""}>${ic("trash")}</button></li>`).join("")}</ul></div>
     </div>`,
     foot: `<button class="btn btn-ghost btn-danger" id="debtDel">${ic("trash")}Eliminar</button><button class="btn" id="debtEdit">Editar</button>`,
@@ -1803,12 +1877,14 @@ function openDebt(id) {
 function openDebtOp(id, type) {
   const x = D.debts.find(y => y.id === id), s = M.debtState(x), owe = x.dir === "owe";
   const title = type === "pay" ? (owe ? "Registrar pago" : "Registrar cobro") : (owe ? "Me prestan más" : "Le presto más");
+  const moneyOut = (owe && type === "pay") || (!owe && type === "add");
   openSheet({
     title,
     body: `<form class="form" id="dopForm" novalidate><p class="muted">${esc(x.who)} · ${owe ? "te queda" : "le queda"} ${fmt(s.remaining)}</p>
       ${moneyField("amount", "Importe", type === "pay" && x.monthly ? centsToInput(Math.min(x.monthly, s.remaining)) : "", { big: true, auto: true, hint: type === "pay" ? `Para saldarla del todo: ${fmt(s.remaining)}` : "" })}
       ${type === "pay" ? `<button type="button" class="link" id="payAll" style="justify-self:start">Pagar todo lo pendiente</button>` : ""}
-      <fieldset class="field"><legend>${(owe && type === "pay") || (!owe && type === "add") ? "¿De qué cuenta sale?" : "¿En qué cuenta entra?"}</legend>${accountChips("account", D.accounts[0].id === "cash" && D.accounts[1] ? D.accounts[1].id : D.accounts[0].id, { none: true, noneLabel: "Ninguna" })}</fieldset>
+      <fieldset class="field"><legend>${moneyOut ? "¿De dónde sale el dinero?" : "¿Dónde entra el dinero?"}</legend>${sourceChips("account", D.accounts[0].id === "cash" && D.accounts[1] ? D.accounts[1].id : D.accounts[0].id, { none: true, noneLabel: "Ninguna" })}
+        <small class="hint">${moneyOut ? "Puede salir de una cuenta o de tus ahorros." : "Puede entrar en una cuenta o en tus ahorros."}</small><small class="err" data-err="account"></small></fieldset>
       ${dateField(today())}${textField("note", "Nota", "", { optional: true, max: 80 })}<button type="submit" hidden></button></form>`,
     foot: `<button class="btn btn-ghost" id="dopBack">${ic("left")}Atrás</button><button class="btn btn-primary" id="dopSave">Guardar</button>`,
     mount: el => {
@@ -1821,6 +1897,7 @@ function openDebtOp(id, type) {
         if (!(amount > 0)) errs.amount = Number.isNaN(amount) ? "Escribe el importe solo con números." : "Escribe un importe mayor que 0.";
         else if (type === "pay" && amount > s.remaining) errs.amount = `Solo quedan ${fmt(s.remaining)} pendientes.`;
         if (!U.isDate(date)) errs.date = "Elige una fecha válida.";
+        const se = amount > 0 && sourceError(radio(form, "account"), amount, moneyOut); if (se) errs.account = se;
         if (!setErrors(form, errs)) return;
         const done = type === "pay" && amount === s.remaining;
         commit(d => M.addDebtOp(d, id, { type, amount, date, note: form.elements.note.value.trim() }, radio(form, "account")), done ? (owe ? `¡Deuda con ${x.who} saldada!` : `${x.who} ya te lo ha devuelto todo`) : "Guardado");

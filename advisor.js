@@ -2,8 +2,8 @@
 // It runs entirely on the device. It gives general financial-health guidance, never
 // buy/sell recommendations for specific products.
 
-import { ym, addMonths, daysInMonth, sum, fmt0, fmtPct, MONTHS } from "./util.js?v=7";
-import { isStat, monthTotals, categorySums, accountBalances, savingsSummary, debtsSummary, debtState, fixedSummary, ASSET_KINDS } from "./model.js?v=7";
+import { ym, addMonths, addDays, daysInMonth, sum, fmt0, fmtPct, MONTHS } from "./util.js?v=8";
+import { isStat, monthTotals, categorySums, accountBalances, savingsSummary, debtsSummary, debtState, fixedSummary, occurrences, ASSET_KINDS } from "./model.js?v=8";
 
 const LEVEL = { critical: 0, warn: 1, info: 2, good: 3 };
 /** Spending categories that count as needs in the 50/30/20 split. */
@@ -305,6 +305,55 @@ export function analyze(d, today) {
       "Para el largo plazo, suelen recomendarse productos muy diversificados y con comisiones bajas, y no tocarlos en las caídas.", "Interés compuesto · John Bogle y Warren Buffett");
   }
 
+
+  // ---- This month: what is still coming and what you can spend per day ------------------
+  const lastDay = `${cur}-${String(dim).padStart(2, "0")}`;
+  const daysLeft = dim - day + 1; // today included
+  const pend = type => sum((d.fixed || []).filter(f => !f.paused && (type === "in" ? f.type === "in" : f.type !== "in"))
+    .map(f => occurrences(f, f.posted && f.posted > today ? f.posted : today, lastDay).length * f.amount));
+  const leftIn = pend("in"), leftOut = pend("out");
+  const varSpent = sum(d.tx.filter(t => isStat(t) && t.type === "out" && !t.fixed && ym(t.date) === cur && t.date <= today).map(t => t.amount));
+  const varAvg = full.length ? Math.max(0, avgOut - fx.monthlyOut) : 0;
+  const varLeftExpected = full.length ? Math.max(0, varAvg - varSpent) : Math.round(day > 3 ? varSpent / day * (dim - day) : 0);
+  const forecast = available + leftIn - leftOut - varLeftExpected;
+  const goal = avgIn > 0 ? Math.round(avgIn * 0.2) : 0; // pay yourself first: 20 % of a normal month
+  const savedSoFar = Math.max(0, now.i - now.o);
+  const goalLeft = Math.max(0, goal - savedSoFar);
+  const spendable = available + leftIn - leftOut - goalLeft;
+  const safeDaily = Math.max(0, Math.floor(spendable / daysLeft));
+  const month = { daysLeft, leftIn, leftOut, varSpent, forecast, safeDaily, goalLeft, spendable };
+  if (enoughData && available > 0) {
+    if (spendable < 0) add("warn", "Este mes vas justo",
+      `Con lo que tienes (${fmt0(available)}), lo que aún te entra (${fmt0(leftIn)}) y tus gastos fijos pendientes (${fmt0(leftOut)}), no llegarías a apartar ${fmt0(goal)} para ahorro este mes.`,
+      `Intenta limitar los gastos variables hasta fin de mes. Te faltan unos ${fmt0(-spendable)} para cumplir el objetivo.`, "Presupuesto base cero · cada euro con un destino");
+    else add("info", `Puedes gastar unos ${fmt0(safeDaily)} al día`,
+      `Hasta fin de mes ${daysLeft === 1 ? "queda hoy" : `quedan ${daysLeft} días`}. Ya descuento tus gastos fijos pendientes (${fmt0(leftOut)})${goalLeft ? ` y ${fmt0(goalLeft)} para ahorro` : ""}.`,
+      forecast >= 0 ? `Si sigues como hasta ahora, acabarías el mes con unos ${fmt0(forecast)} en tus cuentas.` : `A tu ritmo habitual acabarías el mes en ${fmt0(forecast)}: frena un poco los gastos variables.`, "Presupuesto diario · Ramit Sethi");
+  }
+
+  // ---- Where the money goes ---------------------------------------------------------------
+  if (catMonths.length) {
+    const spent = Object.entries(refCats).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+    const totalSpent = sum(spent.map(x => x[1]));
+    if (spent.length >= 3 && totalSpent > 0) {
+      const top = spent.slice(0, 3);
+      const share = sum(top.map(x => x[1])) / totalSpent;
+      add("info", "En qué se te va el dinero",
+        `${top.map(([c, v]) => `${c} ${fmt0(v)} (${fmtPct(v / totalSpent)})`).join(", ")}${catMonths.length > 1 ? " de media al mes" : " este mes"}. Estas tres suman el ${fmtPct(share)} de tus gastos.`,
+        `Recortar un 10 % solo en ${top[0][0].toLowerCase()} te ahorraría ${fmt0(top[0][1] * 0.1)} al mes, ${fmt0(top[0][1] * 1.2)} al año.`, "Empieza por las partidas grandes · Ramit Sethi");
+    }
+  }
+
+  // ---- Progress: last complete month vs. the one before -----------------------------------
+  const m1 = addMonths(cur, -1), m2 = addMonths(cur, -2);
+  if (months.includes(m1) && months.includes(m2)) {
+    const a1 = monthTotals(d, m1), a2 = monthTotals(d, m2);
+    const s1 = a1.i - a1.o, s2 = a2.i - a2.o;
+    if (s1 > s2 && s1 > 0 && s1 - s2 >= 2000) add("good", "Vas mejorando",
+      `En ${MONTHS[Number(m1.slice(5)) - 1]} ahorraste ${fmt0(s1)}, ${fmt0(s1 - s2)} más que en ${MONTHS[Number(m2.slice(5)) - 1]}.`,
+      "Los pequeños avances constantes son los que más suman a largo plazo.", "Hábitos · Morgan Housel");
+  }
+
   // Priority ladder: what to focus on now, in order
   const hasData = avgOut > 0;
   const ladder = [
@@ -342,7 +391,7 @@ export function analyze(d, today) {
   insights.sort((a, b) => LEVEL[a.level] - LEVEL[b.level]);
   return {
     score, scoreParts: parts, enoughData, insights, projection,
-    ladder, split, metrics: { avgIn, avgOut, rate, monthsCovered, liquid, worth, available, invested, savings: sav.total, refMonths: ref.length, recurring, owe: debts.owe, owed: debts.owed, fixedLoad },
+    ladder, split, month, metrics: { avgIn, avgOut, rate, monthsCovered, liquid, worth, available, invested, savings: sav.total, refMonths: ref.length, recurring, owe: debts.owe, owed: debts.owed, fixedLoad },
   };
 }
 

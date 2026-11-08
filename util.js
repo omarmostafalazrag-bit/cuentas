@@ -3,16 +3,15 @@
 export const MONTHS = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 
 const eur = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", useGrouping: "always" });
-const eur0 = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 0, useGrouping: "always" });
 
 /** Cents → "1.234,56 €". */
 export const fmt = c => eur.format((c || 0) / 100);
-/** Cents → "1.235 €". */
-export const fmt0 = c => eur0.format(Math.round((c || 0) / 100));
+/** Cents → always the exact amount, with cents ("1.234,56 €"). Kept as a name for older call sites. */
+export const fmt0 = c => fmt(Math.round(c || 0));
 /** Signed, with a real minus sign. */
 export const fmtSigned = (c, digits = 2) => {
-  const shown = digits ? Math.round(c) : Math.round(c / 100) * 100; // the sign follows what is displayed, so no "−0 €"
-  return (shown < 0 ? "−" : shown > 0 ? "+" : "") + (digits ? fmt(Math.abs(c)) : fmt0(Math.abs(c)));
+  const shown = Math.round(c); // the sign follows what is displayed, so no "−0,00 €"
+  return (shown < 0 ? "−" : shown > 0 ? "+" : "") + fmt(Math.abs(shown));
 };
 /** Signed percentage from a ratio (0.092 → "+9,2 %"), without "−0,0 %". */
 export const fmtPctSigned = (r, digits = 1) => {
@@ -20,7 +19,7 @@ export const fmtPctSigned = (r, digits = 1) => {
   return (shown < 0 ? "−" : shown > 0 ? "+" : "") + fmtPct(Math.abs(r), digits);
 };
 /** Cents without sign, with a minus when negative (for balances). */
-export const fmtBal = (c, digits = 0) => (c < 0 ? "−" : "") + (digits ? fmt(Math.abs(c)) : fmt0(Math.abs(c)));
+export const fmtBal = c => (Math.round(c) < 0 ? "−" : "") + fmt(Math.abs(Math.round(c)));
 
 /** Plain number with up to `max` decimals, Spanish style ("0,0125"). */
 export const fmtNum = (n, max = 8) => (Number(n) || 0).toLocaleString("es-ES", { maximumFractionDigits: max });
